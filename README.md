@@ -12,6 +12,8 @@ Bot API server (**2GB file support**).
 
 | Source | What you get |
 |---|---|
+| e-hentai / exhentai galleries (`/g/...`) | Scanned for count + size, then sent as zip(s) |
+| pawchive posts (`/.../user/.../post/...`) | All attachments downloaded, packed into zip(s) |
 | Mega file links (`mega.nz/file/...`) | Sent directly as documents |
 | Mega folder links (`mega.nz/folder/...`) | Downloaded (decrypted + verified), packed into zip(s) |
 | Terabox share links | All files downloaded, packed into zip(s) |
@@ -106,6 +108,8 @@ Then send your bot a link.
 
 Just paste a link — no command needed.
 
+- **Gallery** (e-hentai / pawchive) → scanned for count + size, then downloaded
+  and zipped with live progress.
 - **Mega file** → sent directly. **Mega folder** → downloaded and zipped.
 - **Terabox share** → all files downloaded and zipped.
 - **Facebook / Instagram photos** → original documents (no zip).
@@ -142,7 +146,7 @@ docker compose up --build
 | `bot.py` | Everything: scrapers, downloaders, Telegram handlers |
 | `Dockerfile` | Bot container (`python:3.12-slim` + ffmpeg for video merging) |
 | `docker-compose.yml` | `bot` + local Bot API (`botapi`) + cache `cleaner` |
-| `requirements.txt` | `cloudscraper`, `python-telegram-bot`, `python-dotenv`, `mega.py`, `yt-dlp` |
+| `requirements.txt` | `cloudscraper`, `beautifulsoup4`, `python-telegram-bot`, `python-dotenv`, `mega.py`, `yt-dlp` |
 
 The zip size cap lives in `bot.py` as `MAX_ZIP_MB = 2000` (Telegram's local-API
 limit — do not raise it).
