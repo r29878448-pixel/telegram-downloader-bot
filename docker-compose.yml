@@ -1,5 +1,5 @@
-# 2GB zip (local Bot API server soho, max limit)
-# .env-e bosao:
+# 2GB zip (with the local Bot API server, max limit)
+# Put these in .env:
 #   TELEGRAM_API_ID=...
 #   TELEGRAM_API_HASH=...
 #   BOT_TOKEN=...
@@ -34,17 +34,17 @@ services:
       ALLOWED_IDS: ${ALLOWED_IDS:-}
       TELEGRAM_API_BASE_URL: http://botapi:8081/bot
       TELEGRAM_API_BASE_FILE_URL: http://botapi:8081/file/bot
-    # 2GB zip + source ak sathe /tmp-e thake, tai disk-backed volume.
-    # RAM-backed tmpfs-e 2GB+2GB dhorbe na (OOM hobe).
+    # 2GB zip + source both live in /tmp, so use a disk-backed volume.
+    # A RAM-backed tmpfs cannot hold 2GB+2GB (it would OOM).
     volumes:
       - tmpdata:/tmp
-      # Login-walled site/media (IG, YT, FB...) — host-er ./cookies/cookies.txt
-      # (Netscape format) read-only mount hoy /app/cookies/cookies.txt-e.
-      # Folder khali/absent hole problem nai — bot nijei ignore kore.
+      # Login-walled site/media (IG, YT, FB...) — host ./cookies/cookies.txt
+      # (Netscape format) is mounted read-only at /app/cookies/cookies.txt.
+      # An empty or missing folder is fine — the bot ignores it.
       - ./cookies:/app/cookies:ro
 
-  # botapi-er cache (sent file copy) auto-clean — nahole VPS disk full hobe.
-  # 6h+ purono file hourly delete kore. Cholti upload-e hat dey na.
+  # Auto-clean the botapi cache (copies of sent files) — otherwise the VPS disk fills up.
+  # Deletes files older than 6h every hour. Does not touch an upload in progress.
   cleaner:
     image: alpine:3.20
     restart: unless-stopped

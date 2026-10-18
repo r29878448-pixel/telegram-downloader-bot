@@ -29,8 +29,7 @@ Bot API server (**2GB file support**).
 - **Smart splitting** — sets over 2GB are split into `part1.zip`, `part2.zip`, …
 - **Auto-cleanup** — temp files are deleted after every job; a `cleaner` service
   also purges the Bot API cache hourly. Your VPS disk stays clean.
-- **Bot commands** — `/start`, `/status` (uptime, active jobs, free disk),
-  `/ping`, `/help`.
+- **Bot commands** — `/start`, `/ping`, `/help`.
 - **Private mode** — optional `ALLOWED_IDS` restricts the bot to you.
 
 > Why a local Bot API server? Official `api.telegram.org` caps bot files at

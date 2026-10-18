@@ -15,14 +15,14 @@ MAX_WORKERS = 5  # 3 = safe, 5 = fast, 8+ = ban risk
 PAGE_RETRIES = 4
 IMG_RETRIES = 4
 
-# resume-e sob media type check hobe (mp4/webm soho)
+# resume check covers every media type (mp4/webm included)
 MEDIA_EXTS = ("jpg", "jpeg", "png", "webp", "gif", "avif", "mp4", "webm", "m4v", "mov")
 
 _thread_local = threading.local()
 _print_lock = threading.Lock()
 
 try:
-    # Windows console cp1252/codepage-e emoji print-e crash korto (UnicodeEncodeError)
+    # Windows console cp1252/codepage crashed on emoji prints (UnicodeEncodeError)
     import sys as _sys
     if hasattr(_sys.stdout, 'reconfigure'):
         _sys.stdout.reconfigure(errors='replace')
@@ -41,8 +41,8 @@ def _thread_log(msg):
 
 
 def find_cookies_file():
-    """cookies.txt khuje: bot folder + cookies/ subfolder (docker mount-er jonno).
-    Returns path or None."""
+    """Look for cookies.txt: bot folder + cookies/ subfolder (for docker mounts).
+    Returns the path or None."""
     here = os.path.dirname(os.path.abspath(__file__))
     cands = (
         os.path.join(here, 'cookies.txt'),
@@ -60,7 +60,7 @@ def find_cookies_file():
 
 
 def new_scraper():
-    """Fresh cloudscraper session (+cookies.txt thakle login cookies soho)."""
+    """Fresh cloudscraper session (with login cookies from cookies.txt if present)."""
     sc = cloudscraper.create_scraper(
         browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
     )
@@ -72,7 +72,7 @@ def new_scraper():
             jar.load(ignore_discard=True, ignore_expires=True)
             n = 0
             for c in jar:
-                # domain thik rekhe session-e daw (onno site-e leak hobe na)
+                # keep each cookie's domain so it never leaks to other sites
                 sc.cookies.set_cookie(c)
                 n += 1
             if n:
@@ -83,7 +83,7 @@ def new_scraper():
 
 
 def get_scraper():
-    # proti thread-e alada session: fast + thread-safe
+    # one session per thread: fast + thread-safe
     if not hasattr(_thread_local, "scraper"):
         _thread_local.scraper = new_scraper()
     return _thread_local.scraper
@@ -95,7 +95,7 @@ def sanitize_folder_name(name):
 
 
 def sanitize_file_name(name, max_len=120):
-    """Original title theke safe filename. Sorting-er jonno number prefix alada thakbe."""
+    """Safe filename built from the original title. The number prefix stays separate for sorting."""
     name = unquote(name).strip().replace('+', ' ')
     name = re.sub(r'[\\/*?:"<>|]', "", name).strip()
     name = re.sub(r'\s+', ' ', name)
@@ -120,24 +120,24 @@ VIDEO_DOMAINS = (
     'tiktok.com', 'vt.tiktok.com', 'vm.tiktok.com',
 )
 FB_DOMAINS = ('facebook.com', 'fb.watch', 'fb.com')
-# 60 min-er besi video refuse (2GB cross + ghonta lege jay)
+# refuse videos over 60 min (crosses 2GB and takes hours)
 VIDEO_MAX_MINUTES = 60
 
 # ================= E-HENTAI / PAWCHIVE =================
-# Custom HTTP headers (UA TERA_UA-er sathe mil rekhe)
+# Custom HTTP headers (UA kept in sync with TERA_UA)
 HEADERS = {
     'User-Agent': TERA_UA,
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9',
 }
 
-# NOTE: Ei section pure HTTP (cloudscraper) diye download kore — kono browser
-# window / GUI automation nai. Screen off hole Windows-er power-saving network
-# hiccup-er karone age image miss hoto, tai retry + resume + sleep-prevent add.
+# NOTE: This section downloads over plain HTTP (cloudscraper) — no browser
+# window / GUI automation. With the screen off, Windows power-saving network
+# hiccups used to drop images, hence retry + resume + sleep-prevent.
 
 
 def prevent_sleep_start():
-    """Windows ke sleep-e jete badha dey download chola obosthay."""
+    """Stop Windows from sleeping while a download is running."""
     try:
         import ctypes
         # ES_CONTINUOUS (0x80000000) | ES_SYSTEM_REQUIRED (0x00000001)
@@ -147,7 +147,7 @@ def prevent_sleep_start():
 
 
 def prevent_sleep_stop():
-    """Ager power state-e firiye dey."""
+    """Restore the previous power state."""
     try:
         import ctypes
         # ES_CONTINUOUS only = normal behaviour restore
@@ -157,7 +157,7 @@ def prevent_sleep_stop():
 
 
 def safe_get(url, timeout=30, retries=4, stream=False, extra_headers=None, quiet=False):
-    """Transient network error hole fast retry kore. Thread-safe."""
+    """Fast retry on transient network errors. Thread-safe."""
     last_err = None
     h = dict(HEADERS)
     if extra_headers:
@@ -173,26 +173,26 @@ def safe_get(url, timeout=30, retries=4, stream=False, extra_headers=None, quiet
             last_err = str(e)[:120]
         if not quiet:
             _thread_log(f"   Retry {attempt}/{retries} ({last_err})")
-        # fast backoff: 1s, 2s, 3s... age chilo 2,4,8,16s (etai slow korto)
+        # fast backoff: 1s, 2s, 3s... (was 2,4,8,16s — that was the slow part)
         if attempt < retries:
             time.sleep(attempt * 0.8 + random.uniform(0, 0.5))
     if not quiet:
-        _thread_log(f"   Sob retry fail: {last_err}")
+        _thread_log(f"   All retries failed: {last_err}")
     return None
 
 
 def extract_original_filename(soup, media_url, resp):
-    """Website-e dekha hubuhu original filename ber kore.
+    """Find the exact original filename the site shows.
     Priority: page text (NAME :: WxH) > URL tail > Content-Disposition.
     """
-    # 1. /s/ page-er "#i2 div" e thake: "NAME.webp :: 1080 x 608 :: 5.27 MiB"
+    # 1. found in the "/s/ page" #i2 div: "NAME.webp :: 1080 x 608 :: 5.27 MiB"
     for div in soup.select('#i2 div, #i4 div'):
         txt = div.get_text(strip=True)
         if '::' in txt:
             first = txt.split('::')[0].strip()
             if '.' in first and len(first) < 200:
                 return first
-    # 2. hath media URL-er seshe asol filename thake: .../xres=org/NAME.webp
+    # 2. the real filename sits at the end of the media URL: .../xres=org/NAME.webp
     tail = unquote(media_url.rsplit('/', 1)[-1].split('?')[0].split(';')[0])
     if '.' in tail and len(tail) < 200 and not tail.startswith('keystamp'):
         m = re.search(r'([^;=]+\.(webp|gif|png|jpe?g|avif|mp4|webm|m4v|mov))$', tail, re.I)
@@ -208,14 +208,14 @@ def extract_original_filename(soup, media_url, resp):
 
 
 def already_downloaded(target_dir, i):
-    """001.* ba '001 - *.ext' — jekono format-e thaklei resume (website sorting same thakbe)."""
+    """001.* or '001 - *.ext' — resume if either format exists (site sorting preserved)."""
     prefix_num = f"{i:03d}"
-    # purono format: 001.jpg
+    # old format: 001.jpg
     for e in MEDIA_EXTS:
         p = os.path.join(target_dir, f"{prefix_num}.{e}")
         if os.path.exists(p) and os.path.getsize(p) > 10240:
             return True
-    # notun format: 001 - original.webp (.tmp bad — crash leftover)
+    # new format: 001 - original.webp (.tmp skipped — crash leftover)
     for p in glob.glob(os.path.join(target_dir, f"{prefix_num} - .*")):
         if p.endswith(".tmp"):
             continue
@@ -228,17 +228,17 @@ def already_downloaded(target_dir, i):
 
 
 def extract_media_url(soup, page_url):
-    """Page theke asol media URL ber kore.
+    """Extract the real media URL from the page.
 
     Priority:
-    1. fullimg.php (original file — animated webp/gif/mp4 ekhanei thake)
+    1. fullimg.php (the original file — animated webp/gif/mp4 lives here)
     2. <video>/<source> tag
     3. mp4/webm link
     4. <img id="img">
-    Age sudhu 1+4 check hoto, video tag ignore hoto bole video-type poster
-    sudhu static frame hoye namto.
+    Previously only 1+4 were checked and the video tag was ignored, so
+    video-type posts downloaded as a single static frame.
     """
-    # 1. Download original (RAW - animation/video preserve kore)
+    # 1. Download the original (RAW — preserves animation/video)
     original_a = soup.find('a', href=re.compile(r'fullimg\.php'))
     if original_a and original_a.get('href'):
         return urljoin(page_url, original_a['href']), 'original'
@@ -261,12 +261,12 @@ def extract_media_url(soup, page_url):
         if re.search(r'\.(mp4|webm|m4v|mov)(\?|;|$)', a['href'], re.I):
             return urljoin(page_url, a['href']), 'video'
 
-    # 4. standard viewer image (animated webp/gif hole etai animated file)
+    # 4. standard viewer image (for animated webp/gif this is the animated file)
     img_tag = soup.find('img', id='img')
     if img_tag is not None and img_tag.get('src'):
         return urljoin(page_url, img_tag['src']), 'image'
 
-    # 5. fallback: #i3 box-er ভেতর যেকোনো media
+    # 5. fallback: any media inside the #i3 box
     box = soup.find('div', id='i3')
     if box is not None:
         v = box.find('video') or box.find('source')
@@ -280,7 +280,7 @@ def extract_media_url(soup, page_url):
 
 
 def decide_ext(media_url, resp):
-    """Content-Type + Content-Disposition + URL diye sothik extension."""
+    """Pick the correct extension from Content-Type + Content-Disposition + URL."""
     # 1. Content-Disposition: filename="....webp" / "...mp4"
     cd = resp.headers.get('Content-Disposition', '')
     if cd:
@@ -292,7 +292,7 @@ def decide_ext(media_url, resp):
                 if 2 <= len(e) <= 4 and e.isalnum():
                     return {'jpeg': 'jpg'}.get(e, e)
 
-    # 2. Content-Type (sobcheye reliable — url-te ext na thakleo kaj kore)
+    # 2. Content-Type (most reliable — works even when the URL has no extension)
     ctype = resp.headers.get('Content-Type', '').lower().split(';')[0].strip()
     ctype_map = {
         'image/webp': 'webp',
@@ -305,12 +305,12 @@ def decide_ext(media_url, resp):
         'video/webm': 'webm',
         'video/quicktime': 'mov',
         'video/x-m4v': 'm4v',
-        'application/octet-stream': None,  # niche URL theke ber koro
+        'application/octet-stream': None,  # fall through to the URL below
     }
     if ctype in ctype_map and ctype_map[ctype]:
         return ctype_map[ctype]
 
-    # 3. URL-er seshe asol filename (hath URL-e .../xres=org/NAME.webp thake)
+    # 3. real filename at the end of the URL (.../xres=org/NAME.webp)
     tail = media_url.rsplit('/', 1)[-1].lower()
     m2 = re.search(r'\.(webp|gif|png|jpe?g|avif|mp4|webm|m4v|mov)(?:[?;]|$)', tail)
     if m2:
@@ -327,7 +327,7 @@ def decide_ext(media_url, resp):
 
 
 def is_html_page(resp, data: bytes) -> bool:
-    """Cloudflare block / error page (HTML) media bole vul kore save na hoy."""
+    """Do not mistake a Cloudflare block/error page (HTML) for media and save it."""
     try:
         ctype = (resp.headers.get('Content-Type', '') if resp is not None else '').lower()
     except Exception:
@@ -339,8 +339,8 @@ def is_html_page(resp, data: bytes) -> bool:
 
 
 def fix_ext_by_magic(data: bytes, ext: str) -> str:
-    """Bytes untouched rekhe sudhu extension content-er sathe milay.
-    Ext vul hole kichu client file khulte pare na (tap-e kichu hoyna)."""
+    """Keep the bytes untouched, only align the extension with the content.
+    A wrong extension makes some clients fail to open the file (a tap does nothing)."""
     if data[:3] == b'\xff\xd8\xff':
         real = 'jpg'
     elif data[:8] == b'\x89PNG\r\n\x1a\n':
@@ -354,14 +354,14 @@ def fix_ext_by_magic(data: bytes, ext: str) -> str:
     elif len(data) > 12 and data[4:8] == b'ftyp':
         real = 'mp4'
     else:
-        return ext  # unknown (zip/rar/psd/...) — jemon ache temon
+        return ext  # unknown (zip/rar/psd/...) — leave it as is
     if real == ext or (real == 'jpg' and ext in ('jpg', 'jpeg')):
         return ext
     return real
 
 
 def parse_gallery_meta(soup):
-    """e-hentai gallery page theke file count + total size ('61 images (145.4 MB)') ber kore."""
+    """Read the file count + total size from an e-hentai gallery page ('61 images (145.4 MB)')."""
     text = soup.get_text(" ", strip=True)
     count = size = None
     m = re.search(r'(\d[\d,]*)\s*images?', text)
@@ -381,14 +381,14 @@ def parse_gallery_meta(soup):
 
 
 def scan_eh_gallery(gallery_url):
-    """Sudhu gallery page scan kore title, page_urls, count + estimated size.
-    Kono image download hoy na."""
+    """Scan gallery pages only for title, page_urls, count + estimated size.
+    No image is downloaded."""
     title = "EH_Gallery"
     page_urls = []
     seen_urls = set()
     count = size = None
     current_url = gallery_url
-    max_pages = 200  # safety cap — pagination loop-e atkate
+    max_pages = 200  # safety cap — avoid getting stuck in a pagination loop
 
     pages_visited = 0
     while current_url and pages_visited < max_pages:
@@ -418,8 +418,8 @@ def scan_eh_gallery(gallery_url):
         next_page = None
         ptt_table = soup.find('table', class_='ptt')
         if ptt_table:
-            # next ">" arrow cell = next page (last page-er link na —
-            # ta hole majhkhaner page skip hote pare)
+            # next ">" arrow cell = next page (not the last-page link —
+            # that would skip the pages in between)
             arrow_a = None
             last_a = None
             all_tds = ptt_table.find_all('td')
@@ -428,7 +428,7 @@ def scan_eh_gallery(gallery_url):
                 if not a:
                     continue
                 txt = td.get_text(strip=True)
-                # ">" = next arrow; "»" = last page (skip hobe)
+                # ">" = next arrow; "»" = last page (skipped)
                 if arrow_a is None and txt and ('>' in txt) and ('»' not in txt) and ('\u00bb' not in txt):
                     arrow_a = a
                 last_a = a
@@ -470,7 +470,7 @@ def download_eh_gallery(gallery_url, save_path=".", progress_cb=None, prescan=No
     print(f" Found {total_images} images. Downloading RAW with {MAX_WORKERS} parallel workers...\n")
 
     def download_one(i, page_url):
-        # Resume support (purono 001.ext + notun '001 - name.ext' duitai)
+        # Resume support (both the old 001.ext and the new '001 - name.ext')
         if already_downloaded(target_dir, i):
             return f"[{i}/{total_images}]  Skipped (exists)."
         try:
@@ -496,16 +496,16 @@ def download_eh_gallery(gallery_url, save_path=".", progress_cb=None, prescan=No
             if len(img_data) < 10240:
                 return f"[{i}/{total_images}]  Too small ({len(img_data)}b)."
 
-            # Cloudflare error page (HTML) image nam-e save hole Telegram-e
-            # blank/okl file jeto — tai HTML content reject.
+            # A Cloudflare error page (HTML) saved as an image would arrive in
+            # Telegram as a blank/broken file — so reject HTML content.
             if is_html_page(img_res, img_data):
                 return f"[{i}/{total_images}]  Skipped (HTML, not media)."
 
             ext = fix_ext_by_magic(img_data, decide_ext(media_url, img_res))
 
             # Original title + sorting: '001 - NAME.webp'
-            # number prefix thakay local folder-e website-er hubuhu order thake,
-            # ar pichone original title thakay ki file bujha jay.
+            # the number prefix keeps the site's exact order in the local folder,
+            # and the original title after it shows which file it is.
             orig = extract_original_filename(s, media_url, img_res)
             if orig:
                 stem = orig.rpartition('.')[0] if '.' in orig else orig
@@ -526,7 +526,7 @@ def download_eh_gallery(gallery_url, save_path=".", progress_cb=None, prescan=No
     try:
         done = 0
         t0 = time.time()
-        # ThreadPool: 1 ta 1 ta kore na namiye 5 ta eksathe namabe -> ~4-5x fast
+        # ThreadPool: instead of one at a time, 5 at once -> ~4-5x faster
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
             futures = {ex.submit(download_one, i, u): i for i, u in enumerate(page_urls, start=1)}
             for fut in as_completed(futures):
@@ -556,10 +556,10 @@ def parse_pawchive_url(url):
 
 
 def scan_pawchive_post(post_url):
-    """Pawchive API theke sudhu post info (title, file count, estimated size) — download chara."""
+    """Pawchive API: fetch only post info (title, file count, estimated size) — no download."""
     service, user, post_id = parse_pawchive_url(post_url)
     if not post_id:
-        print(" Pawchive post URL bujha jayni.")
+        print(" Could not parse the Pawchive post URL.")
         return None
 
     api_url = f"https://pawchive.pw/api/v1/{service}/user/{user}/post/{post_id}"
@@ -567,12 +567,12 @@ def scan_pawchive_post(post_url):
     res = safe_get(api_url, timeout=30, retries=PAGE_RETRIES, quiet=True,
                    extra_headers={'Accept': 'application/json'})
     if res is None:
-        print(" API theke post info pelam na.")
+        print(" Could not get post info from the API.")
         return None
     try:
         post = res.json()
     except Exception:
-        print(" API response JSON na.")
+        print(" The API response was not JSON.")
         return None
 
     title = (post.get('title') or f"pawchive_{post_id}").strip()
@@ -593,10 +593,10 @@ def scan_pawchive_post(post_url):
             items.append((name, path))
 
     if not items:
-        print(" Ei post-e kono file/attachment nai.")
+        print(" This post has no file/attachment.")
         return None
 
-    # API-te size na thakle estimate unknown — None pathay, bot "unknown" dekhay
+    # if the API has no size the estimate is unknown — pass None, the bot shows "unknown"
     total = 0
     has_size = False
     for a in ([main] if main.get('path') else []) + (post.get('attachments') or []):
@@ -622,13 +622,13 @@ def scan_pawchive_post(post_url):
 
 
 def download_pawchive_post(post_url, save_path=".", progress_cb=None, prescan=None):
-    """Pawchive post-er sob attachment original filename soho download kore.
+    """Download every attachment of a Pawchive post with its original filename.
 
-    API: /api/v1/{service}/user/{user}/post/{post} theke
-    asol filename (1M.png, ...) + hash path pay.
-    has_full=True hole /data/ (original), na hole /thumbnail/data/ (preview)
-    theke namay — site-ei full file na thakle original deya somvob na.
-    prescan thakle API abar call hoy na (scan-er data reuse).
+    The API /api/v1/{service}/user/{user}/post/{post} returns
+    the real filename (1M.png, ...) + hash path.
+    has_full=True -> /data/ (original), else /thumbnail/data/ (preview);
+    when the site has no full file, the original cannot be served.
+    With a prescan the API is not called again (scan data is reused).
     """
     if prescan and prescan.get('items'):
         service, user, post_id = prescan.get('service'), prescan.get('user'), prescan.get('post_id')
@@ -639,7 +639,7 @@ def download_pawchive_post(post_url, save_path=".", progress_cb=None, prescan=No
     else:
         service, user, post_id = parse_pawchive_url(post_url)
         if not post_id:
-            print(" Pawchive post URL bujha jayni. Example: https://pawchive.pw/patreon/user/72639416/post/139203021")
+            print(" Could not parse the Pawchive post URL. Example: https://pawchive.pw/patreon/user/72639416/post/139203021")
             return None
 
         api_url = f"https://pawchive.pw/api/v1/{service}/user/{user}/post/{post_id}"
@@ -647,12 +647,12 @@ def download_pawchive_post(post_url, save_path=".", progress_cb=None, prescan=No
         res = safe_get(api_url, timeout=30, retries=PAGE_RETRIES,
                        extra_headers={'Accept': 'application/json'})
         if res is None:
-            print(" API theke post info pelam na.")
+            print(" Could not get post info from the API.")
             return None
         try:
             post = res.json()
         except Exception:
-            print(" API response JSON na.")
+            print(" The API response was not JSON.")
             return None
 
         title = (post.get('title') or f"pawchive_{post_id}").strip()
@@ -664,7 +664,7 @@ def download_pawchive_post(post_url, save_path=".", progress_cb=None, prescan=No
         target_dir = os.path.join(save_path, folder)
         os.makedirs(target_dir, exist_ok=True)
 
-        # file + attachments, path diye dedupe
+        # file + attachments, deduped by path
         items, seen = [], set()
         main = post.get('file') or {}
         for a in ([main] if main.get('path') else []) + (post.get('attachments') or []):
@@ -674,7 +674,7 @@ def download_pawchive_post(post_url, save_path=".", progress_cb=None, prescan=No
                 items.append((name, path))
 
         if not items:
-            print(" Ei post-e kono file/attachment nai.")
+            print(" This post has no file/attachment.")
             return None
 
         has_full = post.get('has_full')
@@ -682,27 +682,27 @@ def download_pawchive_post(post_url, save_path=".", progress_cb=None, prescan=No
     if has_full:
         print(f" Full-res archived ({len(items)} files).")
     else:
-        print(" Ei post ekhono archive hoyni (has_full=false) — site-e original nai,")
-        print("   tai preview quality nambe. Pore import hole abar chalale full-res pabe.")
+        print(" This post is not archived yet (has_full=false) — the site has no original,")
+        print("   so preview quality is downloaded. Re-run after an import for full-res.")
 
     print(f" Target Folder: {os.path.abspath(target_dir)}")
 
     def download_one(i, name, path):
         safe_name = sanitize_file_name(name)
-        # preview mode-e archive file-er (rar/zip/psd) kono thumbnail thake na
+        # in preview mode archive files (rar/zip/psd) have no thumbnail
         if not has_full and safe_name.lower().endswith(('.rar', '.zip', '.7z', '.psd', '.psb', '.clip', '.sai', '.bin')):
-            return f"[{i}/{len(items)}]  Skipped (archive, full-res import hole pabe): {safe_name}"
+            return f"[{i}/{len(items)}]  Skipped (archive, available after full-res import): {safe_name}"
         out = os.path.join(target_dir, f"{i:03d} - {safe_name}")
         if os.path.exists(out) and os.path.getsize(out) > 10240:
             return f"[{i}/{len(items)}]  Skipped (exists)."
-        # purono numeric-only format thakleo skip
+        # skip even if the old numeric-only format is already there
         if already_downloaded(target_dir, i):
             return f"[{i}/{len(items)}]  Skipped (exists)."
         url = base + path if path.startswith('/') else base + '/' + path
         r = safe_get(url, timeout=60, retries=IMG_RETRIES, quiet=True,
                      extra_headers={'Referer': post_url, 'Accept': '*/*'})
         if r is None and has_full:
-            # kokhono flag thakleo file missing thake — preview fallback
+            # sometimes the flag is set but the file is missing — preview fallback
             url = 'https://img.pawchive.pw/thumbnail/data' + path
             r = safe_get(url, timeout=60, retries=IMG_RETRIES, quiet=True,
                          extra_headers={'Referer': post_url, 'Accept': '*/*'})
@@ -713,7 +713,7 @@ def download_pawchive_post(post_url, save_path=".", progress_cb=None, prescan=No
             return f"[{i}/{len(items)}]  Too small ({len(data)}b): {name}"
         if is_html_page(r, data):
             return f"[{i}/{len(items)}]  Skipped (HTML, not media): {name}"
-        # ext content-er sathe na mille client khulte pare na — bytes same, sudhu ext thik
+        # a mismatched extension breaks clients — bytes stay identical, only the ext is fixed
         if '.' in safe_name:
             stem, dot, e = safe_name.rpartition('.')
             fixed = fix_ext_by_magic(data, e.lower())
@@ -750,14 +750,14 @@ def download_pawchive_post(post_url, save_path=".", progress_cb=None, prescan=No
 
 
 def scan_any(url):
-    """URL dekhe site chine sothik scanner-e pathay. Returns scan dict or None."""
+    """Detect the site from the URL and route to the right scanner. Returns a scan dict or None."""
     if 'pawchive.pw' in url:
         return scan_pawchive_post(url)
     return scan_eh_gallery(url)
 
 
 def download_any(url, save_path=".", progress_cb=None, prescan=None):
-    """URL dekhe site chine sothik downloader-e pathay. Returns target_dir or None."""
+    """Detect the site from the URL and route to the right downloader. Returns target_dir or None."""
     if 'pawchive.pw' in url:
         return download_pawchive_post(url, save_path=save_path, progress_cb=progress_cb, prescan=prescan)
     else:
@@ -765,7 +765,7 @@ def download_any(url, save_path=".", progress_cb=None, prescan=None):
 
 
 def blocking_download(url: str, workdir: str, progress_cb=None, prescan=None):
-    """Thread-e chalano blocking download. Returns (target_dir, total_bytes)."""
+    """Blocking download meant to run in a thread. Returns (target_dir, total_bytes)."""
     target = download_any(url, save_path=workdir, progress_cb=progress_cb, prescan=prescan)
     if not target or not os.path.isdir(target):
         return None, 0
@@ -791,7 +791,7 @@ def is_terabox_url(url):
 
 
 def parse_terabox_surl(url):
-    """Share link theke surl ber kore. /s/XXX, ?surl=XXX 2 format-e."""
+    """Extract the surl from a share link. Supports /s/XXX and ?surl=XXX forms."""
     m = re.search(r'surl=([A-Za-z0-9_-]+)', url)
     if m:
         return m.group(1)
@@ -802,7 +802,7 @@ def parse_terabox_surl(url):
 
 
 def extract_terabox_auth(page):
-    """Share page HTML theke sign/timestamp/shareid/uk ber kore. Multiple pattern try."""
+    """Extract sign/timestamp/shareid/uk from the share page HTML. Tries several patterns."""
     out = {}
     pats = {
         'sign': [r'"sign"\s*:\s*"([a-f0-9]{20,})"', r"'sign'\s*:\s*'([a-f0-9]{20,})'",
@@ -824,8 +824,8 @@ def extract_terabox_auth(page):
 
 
 def blocking_terabox_download(url, workdir, byte_cb=None):
-    """Terabox share link -> sob file namay. Returns target_dir.
-    Raises ValueError(VERIFY/LOGIN/EXPIRED/EMPTY) clean message-er jonno."""
+    """Terabox share link -> download every file. Returns target_dir.
+    Raises ValueError(VERIFY/LOGIN/EXPIRED/EMPTY) for clean messages."""
     surl = parse_terabox_surl(url)
     if not surl:
         raise ValueError("BAD_LINK")
@@ -833,7 +833,7 @@ def blocking_terabox_download(url, workdir, byte_cb=None):
     sess = requests.Session()
     sess.headers.update({'User-Agent': TERA_UA})
 
-    # 1. share page (nijer domain age, fallback www.terabox.com)
+    # 1. share page (try the link's own domain first, then www.terabox.com)
     try:
         host = re.search(r'https?://([^/]+)', url).group(1)
     except Exception:
@@ -868,7 +868,7 @@ def blocking_terabox_download(url, workdir, byte_cb=None):
     all_files, total_size, queue, seen = [], [0], [('', 0)], set()
 
     def list_dir(path):
-        """Sob page ghure file list. Terabox page-e max ~100 dey."""
+        """Walk every page of the file list. Terabox returns max ~100 per page."""
         out, page = [], 1
         while True:
             params = dict(base_params, page=str(page), num='100', order='time', desc='1', dir=path)
@@ -877,7 +877,7 @@ def blocking_terabox_download(url, workdir, byte_cb=None):
             try:
                 data = r.json()
             except ValueError:
-                # JSONDecodeError-o ValueError — sob PAGE_FAIL hisebe clean message
+                # JSONDecodeError is a ValueError too — report everything as a clean PAGE_FAIL
                 raise ValueError("PAGE_FAIL")
             if data.get('errno') not in (0, None):
                 raise ValueError(f"ERRNO_{data.get('errno')}")
@@ -912,7 +912,7 @@ def blocking_terabox_download(url, workdir, byte_cb=None):
     if not all_files:
         raise ValueError("EMPTY")
 
-    # 3. download protita file (dlink direct, na thakle download API)
+    # 3. download each file (direct dlink, else the download API)
     target_dir = os.path.join(workdir, sanitize_folder_name(f"terabox_{surl[:12]}"))
     os.makedirs(target_dir, exist_ok=True)
     done_bytes = [0]
@@ -963,7 +963,7 @@ def blocking_terabox_download(url, workdir, byte_cb=None):
                             byte_cb(done_bytes[0], total_size[0])
                         except Exception:
                             pass
-            # partial (network cut)-er cheye choto — file bhalo na
+            # smaller than expected (network cut) — the file is bad
             if exp_size and wrote < exp_size * 0.95:
                 raise OSError(f"short read {wrote}/{exp_size}")
             if wrote < 1024:
@@ -972,7 +972,7 @@ def blocking_terabox_download(url, workdir, byte_cb=None):
                 except OSError:
                     pass
         except Exception as e:
-            # 1 ta file fail hole puro job abort na — baki chole
+            # one failed file must not abort the whole job — continue with the rest
             _thread_log(f" Terabox file fail {name}: {str(e)[:100]}")
             try:
                 if os.path.exists(out):
@@ -1009,18 +1009,18 @@ from telegram.ext import (
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-# Fixed 2000MB (2GB) per zip — local Bot API server-er max limit.
-# Er besi Telegram nebe na, tai 2000-er upore dio na.
+# Fixed 2000MB (2GB) per zip — the local Bot API server's max limit.
+# Telegram will not take more, so do not raise this above 2000.
 MAX_ZIP_MB = 2000
-ALLOWED_IDS = os.getenv("ALLOWED_IDS", "").strip()  # optional: "123,456" — khali thakle sobai use korte parbe
-# Local Bot API server use korle (docker-compose): http://botapi:8081
+ALLOWED_IDS = os.getenv("ALLOWED_IDS", "").strip()  # optional: "123,456" — when empty, everyone can use the bot
+# when using the local Bot API server (docker-compose): http://botapi:8081
 API_BASE_URL = os.getenv("TELEGRAM_API_BASE_URL", "").strip()
 API_BASE_FILE_URL = os.getenv("TELEGRAM_API_BASE_FILE_URL", "").strip()
-# Mega Pro login thakle quota bare (optional — khali thakle anonymous).
+# a Mega Pro login raises the quota (optional — anonymous when empty).
 MEGA_EMAIL = os.getenv("MEGA_EMAIL", "").strip()
 MEGA_PASSWORD = os.getenv("MEGA_PASSWORD", "").strip()
 
-# Ek sathe koto ta download job cholbe (beshi hole disk full + 429 risk)
+# how many download jobs may run at once (too many fills the disk + 429 risk)
 try:
     MAX_CONCURRENT_JOBS = max(1, int(os.getenv("MAX_CONCURRENT_JOBS", "3").strip()))
 except ValueError:
@@ -1029,12 +1029,9 @@ JOB_SEM = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
 
 URL_RE = re.compile(r'https?://[^\s]+')
 
-START_TIME = time.time()
-ACTIVE_JOBS = 0
-
 # YT quality choice: key -> {"url": ..., "user_id": ..., "ts": ...}
 PENDING_Q = {}
-# yt-dlp info cache: url -> (ts, info). Video+quality 2 bar info chay — 10 min reuse.
+# yt-dlp info cache: url -> (ts, info). Video+quality ask twice — reuse for 10 min.
 INFO_CACHE = {}
 INFO_TTL = 600
 
@@ -1055,8 +1052,8 @@ def is_allowed(user_id: int) -> bool:
 
 
 def make_zip_parts(src_dir: str, out_dir: str, base_name: str, max_bytes: int, progress_cb=None):
-    """src_dir-er files size onujayi multiple zip-e vag kore.
-    Returns ([zip_paths], skipped_big) — skipped = 2GB+ file count."""
+    """Split the files in src_dir into multiple zips by size.
+    Returns ([zip_paths], skipped_big) — skipped = count of 2GB+ files."""
     files = sorted([p for p in Path(src_dir).rglob("*") if p.is_file() and not p.name.endswith(".tmp")])
     if not files:
         return [], 0
@@ -1067,7 +1064,7 @@ def make_zip_parts(src_dir: str, out_dir: str, base_name: str, max_bytes: int, p
     cur_zip_path = None
     cur_zip = None
     cur_size = 0
-    cur_files = 0  # khali zip upload hobe na
+    cur_files = 0  # never upload an empty zip
 
     def open_new_part():
         nonlocal part, cur_zip_path, cur_zip, cur_size, cur_files
@@ -1076,7 +1073,7 @@ def make_zip_parts(src_dir: str, out_dir: str, base_name: str, max_bytes: int, p
             if cur_files > 0:
                 zips.append(cur_zip_path)
             elif cur_zip_path and os.path.exists(cur_zip_path):
-                # khali part file delete (sob file oversize hole)
+                # delete the empty part file (when every file is oversize)
                 try:
                     os.remove(cur_zip_path)
                 except OSError:
@@ -1094,9 +1091,9 @@ def make_zip_parts(src_dir: str, out_dir: str, base_name: str, max_bytes: int, p
         try:
             fsize = f.stat().st_size
         except OSError:
-            continue  # file ber hoye gele (crash race) — bad
+            continue  # the file disappeared (crash race) — skip it
         if fsize > max_bytes:
-            # single file-i limit-er besi — Telegram-e jabe na, skip
+            # a single file above the limit — Telegram will not take it, skip
             print(f" Skip oversize ({fsize//1048576}MB): {f.name}", flush=True)
             skipped_big += 1
             if progress_cb is not None:
@@ -1105,7 +1102,7 @@ def make_zip_parts(src_dir: str, out_dir: str, base_name: str, max_bytes: int, p
                 except Exception:
                     pass
             continue
-        # ager part full hole notun part khulo
+        # open a new part once the previous one is full
         if cur_size > 0 and cur_size + fsize > max_bytes:
             open_new_part()
         arc = os.path.relpath(f, src_dir)
@@ -1131,8 +1128,8 @@ def make_zip_parts(src_dir: str, out_dir: str, base_name: str, max_bytes: int, p
 
 
 async def send_one_file(chat, path, caption: str):
-    """Ekta file flood-safe way-te pathay. RetryAfter/TimedOut hole wait kore retry.
-    Returns: 'doc' / 'photo' / 'other' / 'failed' — Telegram ki hisebe nilo."""
+    """Send one file in a flood-safe way. Retries after RetryAfter/TimedOut.
+    Returns: 'doc' / 'photo' / 'other' / 'failed' — how Telegram took it."""
     kind = 'failed'
     flood_waited = 0
     for attempt in range(4):
@@ -1155,10 +1152,10 @@ async def send_one_file(chat, path, caption: str):
                 kind = 'other'
             break
         except RetryAfter as e:
-            # puro floodwait window-er beshi wait hole job hang kore sarat — cap
+            # waiting out an oversized flood window would hang the job — cap it
             flood_waited += e.retry_after + 1
             if flood_waited > 1200:
-                _thread_log(f" Send floodwait beshi (>20min), bad: {os.path.basename(path)}")
+                _thread_log(f" Floodwait too long (>20min), giving up: {os.path.basename(path)}")
                 break
             await asyncio.sleep(e.retry_after + 1)
         except TimedOut:
@@ -1166,11 +1163,11 @@ async def send_one_file(chat, path, caption: str):
                 raise
             await asyncio.sleep(3)
         except NetworkError:
-            # Transient connection error — same way retry
+            # transient connection error — retry the same way
             if attempt == 3:
                 raise
             await asyncio.sleep(2)
-    # porpor 100+ file gele Telegram flood dey, tai choto gap
+    # Telegram floods after 100+ files in a row, so keep a small gap
     await asyncio.sleep(0.7)
     return kind
 
@@ -1183,7 +1180,7 @@ async def _safe_edit(status, text: str):
 
 
 def make_progress_cb(status, loop, label="Downloading..."):
-    """Worker thread theke status message-e progress bar update kore (throttled)."""
+    """Update the status message progress bar from a worker thread (throttled)."""
     state = {'t': 0.0}
 
     def cb(done: int, total: int):
@@ -1202,7 +1199,7 @@ def make_progress_cb(status, loop, label="Downloading..."):
 
 
 def make_byte_progress_cb(status, loop, label, total_bytes):
-    """Stream download-er jonno MB-based progress bar (Terabox/Mega)."""
+    """MB-based progress bar for streaming downloads (Terabox/Mega)."""
     state = {'t': 0.0}
 
     def cb(done_bytes: int, total: int = 0):
@@ -1224,7 +1221,7 @@ def make_byte_progress_cb(status, loop, label, total_bytes):
 
 async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Link pathao — ami download kore Telegram-e diye dibo.\n\n"
+        "Send a link — I will download it and send it back on Telegram.\n\n"
         "Supported:\n"
         "- Gallery (e-hentai / pawchive) -> zip\n"
         "- Mega file/folder link\n"
@@ -1232,8 +1229,8 @@ async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "- Facebook post (photo/video)\n"
         "- Instagram post/reel\n"
         "- YouTube / TikTok video\n"
-        "- Jekono direct file link\n\n"
-        "Commands: /status /ping /help"
+        "- Any direct file link\n\n"
+        "Commands: /ping /help"
     )
 
 
@@ -1244,23 +1241,6 @@ async def ping_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await m.edit_text(f"Pong! {ms}ms")
 
 
-async def status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    up = int(time.time() - START_TIME)
-    h, rem = divmod(up, 3600)
-    mnt, sec = divmod(rem, 60)
-    try:
-        free = shutil.disk_usage(tempfile.gettempdir()).free
-        disk = human_size(free)
-    except Exception:
-        disk = "?"
-    await update.message.reply_text(
-        f"Status: online\n"
-        f"Uptime: {h}h {mnt}m {sec}s\n"
-        f"Active jobs: {ACTIVE_JOBS}/{MAX_CONCURRENT_JOBS}\n"
-        f"Disk free: {disk}"
-    )
-
-
 async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Gallery link (e-hentai / pawchive) -> scan (count + size) -> download bar -> zip bar -> upload. Max single zip 2GB.\n\n"
@@ -1268,9 +1248,9 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Terabox share -> files -> zip.\n"
         "FB / IG photo -> direct document. FB video -> document.\n"
         "YouTube video -> quality button. Shorts/TikTok -> auto 1080p.\n"
-        "Onno link -> direct file (1 ta hole document, onekgula hole zip, max 20 link).\n\n"
+        "Any other link -> direct file (1 file as a document, several zipped, max 20 links).\n\n"
         "Limits: 2GB max file/zip, 60 min max video, no live stream.\n"
-        "Sob temp file send-er por auto-delete hoy."
+        "Every temp file is auto-deleted after sending."
     )
 
 
@@ -1278,22 +1258,17 @@ async def url_listener(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg:
         return
-    # media caption-e o URL thakte pare
+    # media captions can contain a URL too
     text = msg.text or msg.caption or ""
     if not URL_RE.search(text):
         return
-    # channel post-e effective_user None hote pare — crash bad (public channel-e allow)
+    # in channel posts effective_user can be None — avoid a crash (allow public channels)
     user = update.effective_user
     if user is not None and not is_allowed(user.id):
         return
-    global ACTIVE_JOBS
-    # concurrent job limit — beshi job sathe chalale disk full hote pare
+    # concurrent job limit — too many jobs at once can fill the disk
     async with JOB_SEM:
-        ACTIVE_JOBS += 1
-        try:
-            await route_url(update, text)
-        finally:
-            ACTIVE_JOBS -= 1
+        await route_url(update, text)
 
 
 async def route_url(update: Update, text: str = None):
@@ -1328,7 +1303,7 @@ async def route_url(update: Update, text: str = None):
 
 
 def human_size(num):
-    """Bytes -> '145.4 MB' format. None/unknown hole '?' dey."""
+    """Bytes -> '145.4 MB' format. Returns '?' for None/unknown."""
     if not num or num <= 0:
         return "?"
     units = ['B', 'KB', 'MB', 'GB', 'TB']
@@ -1341,17 +1316,17 @@ def human_size(num):
 
 
 async def send_as_zip(message, url: str):
-    """Gallery/post link dile direct zip pathay — kono button na."""
+    """For a gallery/post link, send the zip directly — no buttons."""
     loop = asyncio.get_running_loop()
     status = await message.reply_text(
         "Scanning...\n░░░░░░░░░░ 0% (finding images)"
     )
     workdir = tempfile.mkdtemp(prefix="tgdl_")
     try:
-        # 1. Scan only — download shuru korar age count + size dekhay
+        # 1. Scan only — show count + size before the download starts
         info = await asyncio.to_thread(scan_any, url)
         if not info or not info.get('count'):
-            await status.edit_text("No images found. Link / Cloudflare check koro.")
+            await status.edit_text("No images found. Check the link / Cloudflare.")
             return
 
         n_files = info['count']
@@ -1367,7 +1342,7 @@ async def send_as_zip(message, url: str):
         )
 
         if not target:
-            await status.edit_text("Download fail. Link / Cloudflare check koro.")
+            await status.edit_text("Download failed. Check the link / Cloudflare.")
             return
 
         await zip_and_send(status, message.chat, target, total)
@@ -1377,22 +1352,22 @@ async def send_as_zip(message, url: str):
         except Exception:
             pass
     finally:
-        # sob temp file (downloaded images + zips) permanently delete,
-        # nahole VPS storage full hoye jabe
+        # permanently delete every temp file (downloaded images + zips),
+        # otherwise VPS storage fills up
         shutil.rmtree(workdir, ignore_errors=True)
 
 
 async def zip_and_send(status, chat, target_dir: str, total: int):
-    """Downloaded folder -> zip (+progress) -> upload. Gallery + Terabox 2 jon-e use kore."""
+    """Downloaded folder -> zip (+progress) -> upload. Used by gallery + Terabox."""
     loop = asyncio.get_running_loop()
     n_files = sum(1 for _ in Path(target_dir).rglob("*")
                   if _.is_file() and not _.name.endswith(".tmp"))
     if n_files == 0:
-        await status.edit_text("Kono file paini.")
+        await status.edit_text("No files found.")
         return
 
     await status.edit_text(
-        f"{n_files} files ({total/1048576:.1f}MB) — zip hocche..."
+        f"{n_files} files ({total/1048576:.1f}MB) — zipping..."
     )
 
     zipdir = os.path.join(os.path.dirname(target_dir.rstrip(os.sep)), "_zips")
@@ -1410,7 +1385,7 @@ async def zip_and_send(status, chat, target_dir: str, total: int):
             await status.edit_text(
                 f"Zip banano jayni — {skipped} file 2GB+ (Telegram limit).")
         else:
-            await status.edit_text("Zip banano jayni.")
+            await status.edit_text("Could not create the zip.")
         return
 
     n_zips = len(zips)
@@ -1443,7 +1418,7 @@ def mega_fold_key(k8):
 
 
 def blocking_mega_folder_download(url, workdir, byte_cb=None):
-    """Mega folder link -> sob file namay (decrypt soho). Returns target_dir."""
+    """Mega folder link -> download all files (with decryption). Returns target_dir."""
     from Crypto.Cipher import AES
     from Crypto.Util import Counter
     from mega.crypto import (
@@ -1496,7 +1471,7 @@ def blocking_mega_folder_download(url, workdir, byte_cb=None):
     sess = requests.Session()
 
     def mac_update(encryptor, mac_encryptor, chunk):
-        """Mega-exact MAC, kintu C-level bulk op — per-block Python loop-er bodle."""
+        """Mega-exact MAC, but with a C-level bulk op instead of a per-block Python loop."""
         tail_len = len(chunk) % 16
         if tail_len:
             bulk, tail = chunk[:-tail_len], chunk[-tail_len:] + b'\0' * (16 - tail_len)
@@ -1516,7 +1491,7 @@ def blocking_mega_folder_download(url, workdir, byte_cb=None):
             while os.path.exists(out):
                 out = os.path.join(target_dir, f"{stem}({k}){dot}{ext}" if dot else f"{safe}({k})")
                 k += 1
-        r = None  # finally-e unbound NameError hobe na
+        r = None  # avoid an unbound NameError in the finally block
         try:
             try:
                 g = mega_folder_api(node, [{'a': 'g', 'g': 1, 'n': handle}])
@@ -1571,7 +1546,7 @@ def blocking_mega_folder_download(url, workdir, byte_cb=None):
             file_mac = str_to_a32(mac_str)
             if (file_mac[0] ^ file_mac[1], file_mac[2] ^ file_mac[3]) != meta_mac:
                 try:
-                    os.remove(out)  # corrupt file — skip, baki gulo cholbe
+                    os.remove(out)  # corrupt file — drop it, the rest continue
                 except OSError:
                     pass
                 return
@@ -1601,18 +1576,18 @@ def blocking_mega_folder_download(url, workdir, byte_cb=None):
 
 
 def blocking_mega_download(url: str, workdir: str, byte_cb=None):
-    """Mega file link theke 1 ta file, folder link theke sob file namay.
-    Returns file path ba folder path, naile exception."""
+    """Single file from a Mega file link, all files from a folder link.
+    Returns a file path or a folder path, else raises."""
     if '/folder/' in url or '#F!' in url or re.search(r'folder/([A-Za-z0-9_-]+)#', url):
         return blocking_mega_folder_download(url, workdir, byte_cb)
     from mega import Mega
     mega = Mega()
-    # email + password duitai thakle pro login (quota bare)
+    # pro login only when both email + password are set (raises the quota)
     m = mega.login(MEGA_EMAIL, MEGA_PASSWORD) if (MEGA_EMAIL and MEGA_PASSWORD) else mega.login()
     got = m.download_url(url, dest_path=workdir)
     path = got if isinstance(got, str) else None
     if not path or not os.path.isfile(path):
-        # fallback: workdir-e notun file khujo
+        # fallback: look for a new file in workdir
         cands = [os.path.join(workdir, f) for f in os.listdir(workdir)]
         cands = [p for p in cands if os.path.isfile(p)]
         if not cands:
@@ -1622,7 +1597,7 @@ def blocking_mega_download(url: str, workdir: str, byte_cb=None):
 
 
 async def send_mega(message, url: str):
-    """Mega link: single file hole direct document, folder/multiple hole zip."""
+    """Mega link: a single file goes as a document, a folder/multiple as zip."""
     loop = asyncio.get_running_loop()
     status = await message.reply_text("Downloading from Mega...")
     workdir = tempfile.mkdtemp(prefix="tgdl_")
@@ -1632,7 +1607,7 @@ async def send_mega(message, url: str):
             make_byte_progress_cb(status, loop, "Downloading from Mega...", 0),
         )
         if not target:
-            await status.edit_text("Download fail. Link check koro.")
+            await status.edit_text("Download failed. Check the link.")
             return
 
         if os.path.isdir(target):
@@ -1663,19 +1638,19 @@ async def send_mega(message, url: str):
     except ValueError as e:
         code = str(e)
         msg = {
-            "EXPIRED": "Link expired/deleted. Notun link dao.",
-            "EMPTY": "Ei folder-e kono file paini.",
-            "QUOTA": "Mega free quota sesh (IP limit). Pore try koro ba MEGA_EMAIL/PASSWORD env dao.",
-            "EACCESS": "Access denied. Link check koro.",
-            "BAD_LINK": "Link bujha jayni. Mega file/folder link dao.",
+            "EXPIRED": "Link expired/deleted. Send a new link.",
+            "EMPTY": "No files found in this folder.",
+            "QUOTA": "Mega free quota exhausted (IP limit). Try later or set MEGA_EMAIL/PASSWORD.",
+            "EACCESS": "Access denied. Check the link.",
+            "BAD_LINK": "Could not parse the link. Send a Mega file/folder link.",
         }.get(code)
         if msg is None and code.startswith("MEGA_ERRNO_"):
-            msg = "Mega error. Pore try koro."
+            msg = "Mega error. Try again later."
         await status.edit_text(msg or f"Error: {code[:200]}")
     except Exception as e:
         err = str(e)
         if 'quota' in err.lower() or 'overquota' in err.lower() or 'EOVERQUOTA' in err:
-            await status.edit_text("Mega free quota sesh (IP limit). Pore try koro ba MEGA_EMAIL/PASSWORD env dao.")
+            await status.edit_text("Mega free quota exhausted (IP limit). Try later or set MEGA_EMAIL/PASSWORD.")
         else:
             try:
                 await status.edit_text(f"Error: {err[:300]}")
@@ -1686,16 +1661,16 @@ async def send_mega(message, url: str):
 
 
 TERA_ERRORS = {
-    'BAD_LINK': "Link bujha jayni. Terabox share link dao.",
-    'PAGE_FAIL': "Terabox page khule nai. Link / network check koro.",
-    'VERIFY': "Terabox verification chacche (VPS IP block). Pore try koro ba cookie lagbe.",
-    'EXPIRED': "Link expired/deleted. Notun share link dao.",
-    'EMPTY': "Ei share-e kono file paini.",
+    'BAD_LINK': "Could not parse the link. Send a Terabox share link.",
+    'PAGE_FAIL': "Could not open the Terabox page. Check the link / network.",
+    'VERIFY': "Terabox is asking for verification (VPS IP blocked). Try later or add cookies.",
+    'EXPIRED': "Link expired/deleted. Send a new share link.",
+    'EMPTY': "No files found in this share.",
 }
 
 
 async def send_terabox(message, url: str):
-    """Terabox share link -> files namay -> zip -> send."""
+    """Terabox share link -> download files -> zip -> send."""
     loop = asyncio.get_running_loop()
     status = await message.reply_text("Connecting to Terabox...")
     workdir = tempfile.mkdtemp(prefix="tgdl_")
@@ -1705,7 +1680,7 @@ async def send_terabox(message, url: str):
             make_byte_progress_cb(status, loop, "Downloading from Terabox...", 0),
         )
         if not target:
-            await status.edit_text("Download fail. Link check koro.")
+            await status.edit_text("Download failed. Check the link.")
             return
         total = 0
         for root, _, fns in os.walk(target):
@@ -1718,7 +1693,7 @@ async def send_terabox(message, url: str):
     except ValueError as e:
         msg = TERA_ERRORS.get(str(e), None)
         if msg is None and str(e).startswith('ERRNO_'):
-            msg = "Terabox login/verification chacche. Pore try koro."
+            msg = "Terabox is asking for login/verification. Try again later."
         await status.edit_text(msg or f"Error: {str(e)[:200]}")
     except Exception as e:
         try:
@@ -1730,7 +1705,7 @@ async def send_terabox(message, url: str):
 
 
 def blocking_ytdlp_download(url, workdir, byte_cb=None, height=1080):
-    """yt-dlp diye video/image namay (mp4, height cap, 1900MB cap). Returns [file paths].
+    """Download video/image with yt-dlp (mp4, height cap, 1900MB cap). Returns [file paths].
     Raises ValueError(LIVE/TOO_LONG/TOO_BIG/LOGIN/NONE)."""
     import yt_dlp
 
@@ -1796,7 +1771,7 @@ def blocking_ytdlp_download(url, workdir, byte_cb=None, height=1080):
 
 
 def probe_audio(path):
-    """ffprobe diye audio stream ache kina. '' / ' (no audio in source)' / ' (with audio)'."""
+    """Check for an audio stream with ffprobe. '' / ' (no audio in source)' / ' (with audio)'."""
     import subprocess
     if not shutil.which('ffprobe'):
         return ""
@@ -1815,10 +1790,10 @@ def probe_audio(path):
 
 
 VIDEO_ERRORS = {
-    "LIVE": "Live stream download hoy na.",
-    "TOO_BIG": "Video 1.9GB besi — Telegram-e jabe na.",
-    "LOGIN": "Login wall (private/cookie lage). cookies.txt dao.",
-    "NONE": "Video paini. Link check koro.",
+    "LIVE": "Live streams cannot be downloaded.",
+    "TOO_BIG": "Video is over 1.9GB — Telegram will not take it.",
+    "LOGIN": "Login wall (private/needs cookies). Provide cookies.txt.",
+    "NONE": "No video found. Check the link.",
 }
 
 
@@ -1852,14 +1827,14 @@ def fetch_video_info(url):
     if dur and dur > VIDEO_MAX_MINUTES * 60:
         return None, "TOO_LONG"
     INFO_CACHE[url] = (now, info)
-    # cache boro na hoy — 50 tar besi rakhbo na
+    # keep the cache small — never more than 50 entries
     while len(INFO_CACHE) > 50:
         INFO_CACHE.pop(next(iter(INFO_CACHE)))
     return info, ""
 
 
 def available_heights(info, cap=1080):
-    """Info theke mp4 heights (cap porjonto), boro age. Max 5 ta."""
+    """mp4 heights from the info (up to cap), largest first. Max 5."""
     seen = set()
     for f in info.get('formats') or []:
         h = f.get('height')
@@ -1874,7 +1849,7 @@ def available_heights(info, cap=1080):
 
 
 async def send_video(message, url: str):
-    """Social video: YT regular hole quality button, Shorts+onnanno auto-highest."""
+    """Social video: quality buttons for regular YT, auto-highest for Shorts and others."""
     loop = asyncio.get_running_loop()
     status = await message.reply_text("Fetching video info...")
     try:
@@ -1884,9 +1859,9 @@ async def send_video(message, url: str):
         return
     if err:
         if err == "TOO_LONG":
-            await status.edit_text(f"Video {VIDEO_MAX_MINUTES} min-er besi — refuse.")
+            await status.edit_text(f"Video over {VIDEO_MAX_MINUTES} min — refused.")
         else:
-            await status.edit_text(VIDEO_ERRORS.get(err, "Video paini."))
+            await status.edit_text(VIDEO_ERRORS.get(err, "No video found."))
         return
 
     if is_youtube_video(url):
@@ -1896,7 +1871,7 @@ async def send_video(message, url: str):
             sender = message.from_user.id if message.from_user else message.chat.id
             PENDING_Q[key] = {"url": url, "user_id": sender, "ts": time.time(),
                               "title": info.get('title') or 'video'}
-            # expire purono entry (30 min+)
+            # drop old entries (30 min+)
             for k in [k for k, v in PENDING_Q.items() if time.time() - v.get("ts", 0) > 1800]:
                 PENDING_Q.pop(k, None)
             kb = InlineKeyboardMarkup([[
@@ -1908,7 +1883,7 @@ async def send_video(message, url: str):
                 reply_markup=kb,
             )
             return
-        # 1 tai quality thakle direct
+        # only one quality available — go direct
         h = heights[0] if heights else 1080
         await download_and_send_video(status, message.chat, url, h, loop)
         return
@@ -1917,7 +1892,7 @@ async def send_video(message, url: str):
 
 
 async def download_and_send_video(status, chat, url: str, height: int, loop):
-    """Chosen/auto quality-te download + send + cleanup. 1 file=direct, onek=zip."""
+    """Download at the chosen/auto quality, send, then clean up. 1 file=direct, many=zip."""
     workdir = tempfile.mkdtemp(prefix="tgdl_")
     try:
         await status.edit_text(f"Downloading video ({height}p)...")
@@ -1943,9 +1918,9 @@ async def download_and_send_video(status, chat, url: str, height: int, loop):
             print(f"Video send kind: {k} ({name})", flush=True)
             await status.edit_text(f"Done! {name} ({size_mb:.1f}MB){audio_note}.")
             return
-        # social carousel/multiple: sob direct document (zip na)
+        # social carousel/multiple: all as direct documents (no zip)
         kinds, sent = [], 0
-        await status.edit_text(f"{len(targets)} ta file pathacchi (original)...")
+        await status.edit_text(f"Sending {len(targets)} files (original)...")
         for i, fp in enumerate(sorted(targets), start=1):
             try:
                 kinds.append(await send_one_file(chat, fp, os.path.basename(fp)))
@@ -1979,28 +1954,23 @@ async def on_quality_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         return
     if height <= 0 or height > 1080:
-        return  # forge kora callback ignore
-    # age auth check — unauthorized click hole onnotonter pending job nasta korbe na
+        return  # ignore forged callbacks
+    # auth first — an unauthorized click must not destroy someone else's pending job
     item = PENDING_Q.get(key)
     if not item:
-        await q.edit_message_text("Expired — link ta abar pathao.")
+        await q.edit_message_text("Expired — send the link again.")
         return
     if time.time() - item.get("ts", 0) > 1800:
         PENDING_Q.pop(key, None)
-        await q.edit_message_text("Expired — link ta abar pathao.")
+        await q.edit_message_text("Expired — send the link again.")
         return
     if q.from_user.id != item["user_id"] and not is_allowed(q.from_user.id):
-        await q.edit_message_text("Ei download ta onno user-er — nijer link pathao.")
+        await q.edit_message_text("This download belongs to another user — send your own link.")
         return
     PENDING_Q.pop(key, None)
     status = await q.edit_message_text("Starting download...")
-    global ACTIVE_JOBS
-    ACTIVE_JOBS += 1
-    try:
-        await download_and_send_video(status, q.message.chat, item["url"], height,
-                                      asyncio.get_running_loop())
-    finally:
-        ACTIVE_JOBS -= 1
+    await download_and_send_video(status, q.message.chat, item["url"], height,
+                                  asyncio.get_running_loop())
 
 
 def is_fb_url(url):
@@ -2009,7 +1979,7 @@ def is_fb_url(url):
 
 
 def fb_big_variant(url):
-    """ctp thumb param -> s2048 full (signature same thake, CDN boro dey)."""
+    """ctp thumb param -> s2048 full (the signature stays valid, the CDN serves bigger)."""
     if 'ctp=' in url:
         return re.sub(r'ctp=[^&]*', 'ctp=s2048x2048', url)
     return url
@@ -2018,14 +1988,14 @@ def fb_big_variant(url):
 def fb_attachment_nodes(page):
     """all_subattachments blocks: [(mediaset_token, declared, items)].
     items = [(fbid, viewer_uri)], viewer_image = signed full-size.
-    Caller post-ID match kore thik block ney."""
+    The caller matches the post-ID to pick the right block."""
     out = []
     for m in re.finditer(r'"all_subattachments"\s*:\s*\{\s*"count"\s*:\s*(\d+)\s*,\s*"nodes"\s*:\s*\[', page):
         try:
             total = int(m.group(1))
         except ValueError:
             continue
-        # bracket balance kore nodes array sesh khujo
+        # use bracket balance to find the end of the nodes array
         depth, i, start = 0, m.end() - 1, m.end() - 1
         end = -1
         while i < len(page):
@@ -2053,8 +2023,8 @@ def fb_attachment_nodes(page):
 
 
 def fb_scoped_pairs(page):
-    """WWW page theke SUDHU oi post-er photo (story_attachment-er kache + og cover).
-    Onno post (115KB dure) + sticker bad jay. Returns [(big_url, orig_url)]."""
+    """From the WWW page take ONLY that post's photos (near story_attachment + og cover).
+    Other posts (115KB away) + stickers are dropped. Returns [(big_url, orig_url)]."""
     full_by_id = {}
     for u in re.findall(r'https://scontent[^"\\\s]+?\.(?:jpg|png|webp)[^"\\\s]*', page):
         u = u.replace('\\/', '/').replace('&amp;', '&')
@@ -2086,7 +2056,7 @@ def fb_scoped_pairs(page):
 
 
 def fb_unescape_url(url):
-    """FB JSON-er escaped CDN url ke normal URL banay."""
+    """Turn an escaped FB JSON CDN url into a normal URL."""
     return (url.replace('\\/', '/')
             .replace('\\u0026', '&')
             .replace('\\u0025', '%')
@@ -2095,9 +2065,9 @@ def fb_unescape_url(url):
 
 
 def fb_parse_photo_page(html):
-    """Photo viewer page theke full image url + porer photo id.
-    Returns (image_url, next_id). next_id video holeo chain chole, save hoy na."""
-    # script-er vitore JSON escaped thakte pare
+    """Full image url + the next photo id from the photo viewer page.
+    Returns (image_url, next_id). The chain continues even when next_id is a video; nothing is saved."""
+    # may be JSON-escaped inside a script block
     flat = html.replace('\\/', '/').replace('\\"', '"')
     url = ""
     for blob in (html, flat):
@@ -2120,9 +2090,9 @@ def fb_parse_photo_page(html):
 
 
 def fb_walk_pcb(set_id, seed_ids, sess=None):
-    """Post collage (pcb) er protita photo.
-    HTML-e Facebook prothom ~5 ta embed kore, count-o 5 bole dite pare.
-    Chain (nextMediaAfterNodeId) loop-e fire gele set sesh — declared count-e thambe na."""
+    """Every photo of a post collage (pcb).
+    Facebook embeds only the first ~5 in the HTML and may even report count 5.
+    When the chain (nextMediaAfterNodeId) loops back the set is done — it will not stop at the declared count."""
     if not set_id or not str(set_id).startswith("pcb."):
         return []
     seeds = [s for s in seed_ids if s and str(s).isdigit()]
@@ -2158,12 +2128,12 @@ def fb_walk_pcb(set_id, seed_ids, sess=None):
                 break
         if not html:
             misses += 1
-            print(f" FB photo {photo_id} page nai", flush=True)
+            print(f" FB photo {photo_id} page unavailable", flush=True)
             photo_id = next((s for s in seeds if s not in seen), "")
             continue
         misses = 0
         url, nxt = fb_parse_photo_page(html)
-        # emoji / sticker (t39.1997) photo na
+        # emoji / sticker (t39.1997) is not a photo
         if url and "scontent" in url and "/t39.1997" not in url:
             m = re.search(r"(\d+_\d+_\d+_n)", url)
             key = m.group(1) if m else photo_id
@@ -2179,7 +2149,7 @@ def fb_walk_pcb(set_id, seed_ids, sess=None):
 
 
 def fb_candidate_videos(page):
-    """playable_url (hd age) list."""
+    """playable_url list (hd first)."""
     vids = []
     for pat in (r'"playable_url_quality_hd"\s*:\s*"([^"]+)"',
                 r'"playable_url"\s*:\s*"([^"]+)"',
@@ -2195,10 +2165,10 @@ def fb_candidate_videos(page):
 
 
 def blocking_facebook_download(url, workdir, byte_cb=None):
-    """FB share/post link -> video thakle video, naile photo set. Returns target_dir.
+    """FB share/post link -> video when there is one, else the photo set. Returns target_dir.
     Raises ValueError(PAGE_FAIL/LOGIN/NO_PHOTO)."""
     sess = get_scraper()
-    # render session-sticky — proti attempt-e fresh session-e alada render aste pare
+    # the render is session-sticky; a fresh session per attempt may give a different render
     union, declared, page, postid = {}, 0, "", ""
     set_id, seed_ids, page_sess = "", [], None
     targets = [url]
@@ -2229,7 +2199,7 @@ def blocking_facebook_download(url, workdir, byte_cb=None):
             blocks = []
         for tok, dec, items in blocks:
             if postid and postid not in tok and tok:
-                continue  # onno post-er block skip (token chara block nirdosh)
+                continue  # skip another post's block (a block with no token is harmless)
             if dec > declared:
                 declared = dec
             if not set_id and tok.startswith("pcb."):
@@ -2248,14 +2218,14 @@ def blocking_facebook_download(url, workdir, byte_cb=None):
         except Exception:
             pass
         print(f" FB nodes fetch {attempt + 1}: {len(union)}/{declared or '?'}", flush=True)
-        # baki photo HTML-e nai. count 5 holeo set aro boro hote pare — walk-e pawa jabe.
+        # the rest of the photos are not in the HTML. Even with count 5 the set can be bigger — the walk finds them.
         if set_id and seed_ids:
             break
         time.sleep(2)
     if not set_id and postid:
         set_id = f"pcb.{postid}"
-    # declared count-e trust kora jay na: FB prothom 5 ta embed kore count-o 5 dite pare.
-    # chain nijer loop-e thambe, tai post-er baki photo o ashe.
+    # the declared count cannot be trusted: FB embeds only the first 5 and may report 5.
+    # the chain stops at its own loop, so the rest of the post's photos still arrive.
     if set_id.startswith("pcb.") and seed_ids:
         walked = fb_walk_pcb(set_id, seed_ids, page_sess)
         if len(walked) > len(union):
@@ -2317,7 +2287,7 @@ def blocking_facebook_download(url, workdir, byte_cb=None):
                     return None
                 return out
         except Exception:
-            # partial file bad deo — corrupt file zip-e dhukbe na
+            # drop partial files — no corrupt file ends up in the zip
             try:
                 if out is not None and os.path.exists(out):
                     os.remove(out)
@@ -2325,7 +2295,7 @@ def blocking_facebook_download(url, workdir, byte_cb=None):
                 pass
             return None
 
-    # video post (photo set nai) hole video. multi-photo post-e onno video dhukbe na.
+    # a video post (no photo set) -> the video. A multi-photo post must not include another video.
     if len(union) <= 1:
         for i, vu in enumerate(fb_candidate_videos(page), start=1):
             if fetch(vu, 'video', i):
@@ -2340,7 +2310,7 @@ def blocking_facebook_download(url, workdir, byte_cb=None):
         pairs = fb_scoped_pairs(page)
         print(f" FB scoped fallback: {len(pairs)} photos", flush=True)
     if not pairs:
-        # fallback: cover (og:image) only — puro page scrape NA (onno post dhukto)
+        # fallback: cover (og:image) only — do NOT scrape the whole page (other posts would leak in)
         m = re.search(r'property="og:image"[^>]*content="([^"]+)', page)
         if m:
             u = m.group(1).replace('&amp;', '&')
@@ -2375,7 +2345,7 @@ def blocking_facebook_download(url, workdir, byte_cb=None):
 
 
 async def send_facebook(message, url: str):
-    """FB link: video/photo sob direct document (zip na)."""
+    """FB link: video/photo all as direct documents (no zip)."""
     loop = asyncio.get_running_loop()
     status = await message.reply_text("Fetching Facebook post...")
     workdir = tempfile.mkdtemp(prefix="tgdl_")
@@ -2388,19 +2358,19 @@ async def send_facebook(message, url: str):
         except ValueError as e:
             code = str(e)
             await status.edit_text({
-                "PAGE_FAIL": "Facebook page khule nai. Link check koro.",
-                "LOGIN": "Facebook login wall. Public post-er link dao.",
-                "NO_PHOTO": "Ei post-e photo/video paini.",
+                "PAGE_FAIL": "Could not open the Facebook page. Check the link.",
+                "LOGIN": "Facebook login wall. Send a public post link.",
+                "NO_PHOTO": "No photo/video found in this post.",
             }.get(code, f"Error: {code[:200]}"))
             return
         files = sorted([p for p in Path(target).rglob("*") if p.is_file()])
         if not files:
-            await status.edit_text("Kono file paini.")
+            await status.edit_text("No files found.")
             return
         short_note = ""
         if declared and len(files) < declared:
             short_note = f" ({len(files)}/{declared} found — cookies.txt for full)"
-        await status.edit_text(f"{len(files)} ta file pathacchi (original)...")
+        await status.edit_text(f"Sending {len(files)} files (original)...")
         chat = message.chat
         kinds, sent = [], 0
         for i, fp in enumerate(files, start=1):
@@ -2437,7 +2407,7 @@ def parse_ig_shortcode(url):
 
 
 def ig_best_block_url(block):
-    """Candidates block theke sobcheye boro rendition (s1080 > p720 > base)."""
+    """Largest rendition from the candidates block (s1080 > p720 > base)."""
     urls = [u.replace('\\/', '/').replace('\\u0026', '&')
             for u in re.findall(r'"url"\s*:\s*"([^"]+)"', block)]
     if not urls:
@@ -2451,7 +2421,7 @@ def ig_best_block_url(block):
 
 def blocking_instagram_download(url, workdir, byte_cb=None):
     """IG post: photo/carousel -> s1080 originals. Returns (target_dir, is_video).
-    Video post hole video file. Raises ValueError(PAGE_FAIL/LOGIN/NO_PHOTO)."""
+    A video post gives a video file. Raises ValueError(PAGE_FAIL/LOGIN/NO_PHOTO)."""
     code = parse_ig_shortcode(url)
     if not code:
         raise ValueError("BAD_LINK")
@@ -2511,7 +2481,7 @@ def blocking_instagram_download(url, workdir, byte_cb=None):
                     return None
                 return out
         except Exception:
-            # partial file bad deo — corrupt file zip-e dhukbe na
+            # drop partial files — no corrupt file ends up in the zip
             try:
                 if out is not None and os.path.exists(out):
                     os.remove(out)
@@ -2519,7 +2489,7 @@ def blocking_instagram_download(url, workdir, byte_cb=None):
                 pass
             return None
 
-    # 1. photo/carousel blocks (profile-pic bad dite cover dup URL-dedupe)
+    # 1. photo/carousel blocks (skip profile pics, drop duplicate cover URLs)
     seen, wins = set(), []
     for b in re.findall(r'"candidates"\s*:\s*\[(.*?)\]', page):
         pick = ig_best_block_url(b)
@@ -2548,7 +2518,7 @@ def blocking_instagram_download(url, workdir, byte_cb=None):
         files = [p for p in Path(target_dir).rglob("*") if p.is_file()]
         if files:
             return target_dir, False
-        # blocks chilo kintu download fail — video hote pare, niche try
+        # blocks existed but the download failed — may be a video, try below
 
     # 2. video post
     vids = sorted(set(
@@ -2566,7 +2536,7 @@ def blocking_instagram_download(url, workdir, byte_cb=None):
 
 
 async def send_instagram(message, url: str):
-    """IG post: photo/carousel direct document, video direct, na hole yt-dlp fallback."""
+    """IG post: photo/carousel as direct documents, video direct, else a yt-dlp fallback."""
     loop = asyncio.get_running_loop()
     status = await message.reply_text("Fetching Instagram post...")
     workdir = tempfile.mkdtemp(prefix="tgdl_")
@@ -2579,19 +2549,19 @@ async def send_instagram(message, url: str):
         except ValueError as e:
             code = str(e)
             if code == "BAD_LINK":
-                await status.edit_text("Link bujha jayni. IG post/reel link dao.")
+                await status.edit_text("Could not parse the link. Send an IG post/reel link.")
             elif code == "NO_PHOTO":
                 # reels/login-wall: yt-dlp fallback
-                await _safe_edit(status, "Photo nai — yt-dlp diye video try korchi...")
+                await _safe_edit(status, "No photo — trying the video with yt-dlp...")
                 await send_video(message, url)
             else:
-                await status.edit_text("Instagram page khule nai. Link check koro.")
+                await status.edit_text("Could not open the Instagram page. Check the link.")
             return
         files = sorted([p for p in Path(target).rglob("*") if p.is_file()])
         if not files:
-            await status.edit_text("Kono file paini.")
+            await status.edit_text("No files found.")
             return
-        await status.edit_text(f"{len(files)} ta file pathacchi (original)...")
+        await status.edit_text(f"Sending {len(files)} files (original)...")
         chat = message.chat
         kinds, sent = [], 0
         for i, fp in enumerate(files, start=1):
@@ -2619,7 +2589,7 @@ async def send_instagram(message, url: str):
 
 
 def direct_filename(url, resp):
-    """Content-Disposition, naile URL tail theke filename."""
+    """Filename from Content-Disposition, else from the URL tail."""
     cd = resp.headers.get('Content-Disposition', '') if resp is not None else ''
     if cd:
         m = re.search(r"filename\*\s*=\s*UTF-8''([^;\s]+)", cd, re.I)
@@ -2635,8 +2605,8 @@ def direct_filename(url, resp):
 
 
 def blocking_direct_download(urls, workdir, byte_cb=None):
-    """Direct file URL list namay. Webpage/oversize skip. Returns target_dir.
-    Raises ValueError(NO_FILE) jodi kichui namano na jay."""
+    """Download a list of direct file URLs. Webpages/oversize are skipped. Returns target_dir.
+    Raises ValueError(NO_FILE) when nothing could be downloaded."""
     target_dir = os.path.join(workdir, "direct")
     os.makedirs(target_dir, exist_ok=True)
     sess = requests.Session()
@@ -2645,12 +2615,12 @@ def blocking_direct_download(urls, workdir, byte_cb=None):
     saved = []
 
     def fetch_one(url):
-        r = None  # finally-e unbound NameError hobe na
+        r = None  # avoid an unbound NameError in the finally block
         try:
             r = sess.get(url, stream=True, timeout=(30, 120), allow_redirects=True)
             ctype = r.headers.get('Content-Type', '').lower().split(';')[0].strip()
             disp = r.headers.get('Content-Disposition', '').lower()
-            # html sob somoy bad; text/plain sudhu attachment header thakle nibe
+            # always drop html; take text/plain only with an attachment header
             if 'text/html' in ctype or ('text/plain' in ctype and 'attachment' not in disp):
                 return
             try:
@@ -2662,8 +2632,8 @@ def blocking_direct_download(urls, workdir, byte_cb=None):
             name = direct_filename(url, r)
             chunks = []
             if not name:
-                # prothom 256KB chunk dekhe html kina check (same iterator
-                # bar bar banale urllib3 stream-e undefined behaviour hote pare)
+                # inspect the first 256KB chunk for html (reuse the same iterator;
+                # building a new one can be undefined behaviour on a urllib3 stream)
                 it = r.iter_content(chunk_size=1024 * 256)
                 chunks_iter = it
                 first = next(it, None)
@@ -2714,7 +2684,7 @@ def blocking_direct_download(urls, workdir, byte_cb=None):
                 return
             saved.append(out)
         except Exception:
-            # partial/failed file bad deo — zip-e corrupt file dhukbe na
+            # drop partial/failed files — no corrupt file ends up in the zip
             try:
                 if 'out' in locals() and os.path.exists(out):
                     os.remove(out)
@@ -2737,7 +2707,7 @@ def blocking_direct_download(urls, workdir, byte_cb=None):
 
 
 async def send_direct(message, urls):
-    """Jekono direct file link: 1 ta hole document, onekgula hole zip."""
+    """Any direct file link: 1 file as a document, several zipped."""
     loop = asyncio.get_running_loop()
     status = await message.reply_text("Checking link...")
     workdir = tempfile.mkdtemp(prefix="tgdl_")
@@ -2767,7 +2737,7 @@ async def send_direct(message, urls):
         await zip_and_send(status, message.chat, target, total)
     except ValueError as e:
         if str(e) == "NO_FILE":
-            await status.edit_text("Direct file paini. Webpage link hole gallery supported site-er link dao.")
+            await status.edit_text("No direct file found. If it is a webpage, send a link from a supported site.")
         else:
             await status.edit_text(f"Error: {str(e)[:200]}")
     except Exception as e:
@@ -2781,14 +2751,13 @@ async def send_direct(message, urls):
 
 BOT_COMMANDS = [
     BotCommand("start", "Start the bot"),
-    BotCommand("status", "Bot status"),
     BotCommand("ping", "Check latency"),
     BotCommand("help", "How to use"),
 ]
 
 
 async def post_init(app):
-    """Start-er somoy command menu Telegram-e register kore."""
+    """Register the command menu with Telegram at startup."""
     try:
         await app.bot.set_my_commands(BOT_COMMANDS)
     except Exception as e:
@@ -2796,7 +2765,7 @@ async def post_init(app):
 
 
 def clean_stale_workdirs():
-    """Ag-er crash-e volume-e kono tgdl_* pore thakle start-ei delete."""
+    """Delete leftover tgdl_* dirs from a previous crash at startup."""
     try:
         tmp = tempfile.gettempdir()
         for name in os.listdir(tmp):
@@ -2807,9 +2776,9 @@ def clean_stale_workdirs():
 
 
 def wait_for_local_api():
-    """Docker-er local Bot API server (botapi) ready hote 1-2 min lege.
-    Ready na hote run_polling get_me fail kore restart loop-e jay —
-    tai age server up hole dekhi (any HTTP reply mane ready)."""
+    """Docker's local Bot API server (botapi) takes 1-2 min to become ready.
+    When it is not ready, run_polling's get_me fails and the container enters a
+    restart loop — so wait until the server answers (any HTTP reply = ready)."""
     if not API_BASE_URL:
         return
     print(f"Waiting for local Bot API ({API_BASE_URL})...", flush=True)
@@ -2821,16 +2790,16 @@ def wait_for_local_api():
             return
         except Exception:
             time.sleep(2)
-    print(" Local Bot API ready na — tao cholar chesta kore jai...", flush=True)
+    print(" Local Bot API not ready — trying anyway...", flush=True)
 
 
 def main():
     if not BOT_TOKEN:
-        raise SystemExit("BOT_TOKEN .env-e bosao. (.env.example dekho)")
+        raise SystemExit("Set BOT_TOKEN in .env. (see .env.example)")
     clean_stale_workdirs()
     wait_for_local_api()
     builder = ApplicationBuilder().token(BOT_TOKEN)
-    # 2GB porjonto file-e maximum timeout — slow VPS upload-eo "Timed out" hobe na.
+    # maximum timeouts for up to 2GB files — no "Timed out" even on a slow VPS upload.
     builder = builder.connect_timeout(120).read_timeout(3600).write_timeout(7200).pool_timeout(120)
     builder = builder.post_init(post_init)
     if API_BASE_URL:
@@ -2840,7 +2809,6 @@ def main():
     app = builder.build()
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("ping", ping_cmd))
-    app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CallbackQueryHandler(on_quality_choice, pattern=r"^q:"))
     app.add_handler(MessageHandler(
