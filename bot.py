@@ -40,15 +40,35 @@ def _thread_log(msg):
             print(str(msg).encode('ascii', 'replace').decode('ascii'), flush=True)
 
 
+def find_cookies_file():
+    """cookies.txt khuje: bot folder + cookies/ subfolder (docker mount-er jonno).
+    Returns path or None."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    cands = (
+        os.path.join(here, 'cookies.txt'),
+        'cookies.txt',
+        os.path.join(here, 'cookies', 'cookies.txt'),
+        os.path.join('cookies', 'cookies.txt'),
+    )
+    for p in cands:
+        try:
+            if os.path.isfile(p):
+                return p
+        except OSError:
+            continue
+    return None
+
+
 def new_scraper():
     """Fresh cloudscraper session (+cookies.txt thakle login cookies soho)."""
     sc = cloudscraper.create_scraper(
         browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
     )
     try:
-        import http.cookiejar as _cj
-        if os.path.exists('cookies.txt'):
-            jar = _cj.MozillaCookieJar('cookies.txt')
+        cookies_path = find_cookies_file()
+        if cookies_path:
+            import http.cookiejar as _cj
+            jar = _cj.MozillaCookieJar(cookies_path)
             jar.load(ignore_discard=True, ignore_expires=True)
             n = 0
             for c in jar:
@@ -56,9 +76,9 @@ def new_scraper():
                 sc.cookies.set_cookie(c)
                 n += 1
             if n:
-                print(f" cookies.txt loaded ({n} cookies)", flush=True)
+                _thread_log(f" cookies loaded ({n}) from {os.path.basename(cookies_path)}")
     except Exception as e:
-        print(f" cookies.txt load fail: {str(e)[:100]}", flush=True)
+        print(f" cookies load fail: {str(e)[:100]}", flush=True)
     return sc
 
 
@@ -365,10 +385,14 @@ def scan_eh_gallery(gallery_url):
     Kono image download hoy na."""
     title = "EH_Gallery"
     page_urls = []
+    seen_urls = set()
     count = size = None
     current_url = gallery_url
+    max_pages = 200  # safety cap — pagination loop-e atkate
 
-    while current_url:
+    pages_visited = 0
+    while current_url and pages_visited < max_pages:
+        pages_visited += 1
         res = safe_get(current_url, timeout=30, retries=PAGE_RETRIES, quiet=True)
         if res is None:
             print(" Failed to access page after retry")
@@ -386,19 +410,33 @@ def scan_eh_gallery(gallery_url):
             size = size if size is not None else s
 
         for a in soup.find_all('a', href=re.compile(r'/s/[a-f0-9]+/\d+-\d+')):
-            if a['href'] not in page_urls:
-                page_urls.append(a['href'])
+            href = urljoin(current_url, a['href'])  # relative link soho safe
+            if href not in seen_urls:
+                seen_urls.add(href)
+                page_urls.append(href)
 
         next_page = None
         ptt_table = soup.find('table', class_='ptt')
         if ptt_table:
+            # next ">" arrow cell = next page (last page-er link na —
+            # ta hole majhkhaner page skip hote pare)
+            arrow_a = None
+            last_a = None
             all_tds = ptt_table.find_all('td')
-            if all_tds:
-                last_a = all_tds[-1].find('a')
-                if last_a and 'href' in last_a.attrs:
-                    next_url = last_a['href']
-                    if next_url != current_url:
-                        next_page = next_url
+            for td in all_tds:
+                a = td.find('a', href=True)
+                if not a:
+                    continue
+                txt = td.get_text(strip=True)
+                # ">" = next arrow; "»" = last page (skip hobe)
+                if arrow_a is None and txt and ('>' in txt) and ('»' not in txt) and ('\u00bb' not in txt):
+                    arrow_a = a
+                last_a = a
+            pick = arrow_a or last_a
+            if pick:
+                next_url = urljoin(current_url, pick['href'])
+                if next_url != current_url and next_url not in seen_urls:
+                    next_page = next_url
 
         current_url = next_page
         time.sleep(random.uniform(0.2, 0.5))
@@ -836,7 +874,11 @@ def blocking_terabox_download(url, workdir, byte_cb=None):
             params = dict(base_params, page=str(page), num='100', order='time', desc='1', dir=path)
             r = sess.get('https://www.terabox.com/share/list', params=params,
                          headers={'Referer': share_page_url}, timeout=30)
-            data = r.json()
+            try:
+                data = r.json()
+            except ValueError:
+                # JSONDecodeError-o ValueError — sob PAGE_FAIL hisebe clean message
+                raise ValueError("PAGE_FAIL")
             if data.get('errno') not in (0, None):
                 raise ValueError(f"ERRNO_{data.get('errno')}")
             batch = data.get('list') or []
@@ -900,22 +942,43 @@ def blocking_terabox_download(url, workdir, byte_cb=None):
         while os.path.exists(out):
             out = f"{stem}({k}){dot}{ext}" if dot else f"{out}({k})"
             k += 1
-        r = sess.get(dlink, headers={'Referer': share_page_url, 'User-Agent': TERA_UA},
-                     stream=True, timeout=60)
-        r.raise_for_status()
-        with open(out, 'wb') as f:
-            for chunk in r.iter_content(chunk_size=1024 * 256):
-                if not chunk:
-                    continue
-                f.write(chunk)
-                done_bytes[0] += len(chunk)
-                if byte_cb is not None:
-                    try:
-                        byte_cb(done_bytes[0], total_size[0])
-                    except Exception:
-                        pass
-        if os.path.getsize(out) < 1024:
-            os.remove(out)
+        try:
+            exp_size = int(it.get('size') or 0)
+        except (TypeError, ValueError):
+            exp_size = 0
+        try:
+            r = sess.get(dlink, headers={'Referer': share_page_url, 'User-Agent': TERA_UA},
+                         stream=True, timeout=(30, 120))
+            r.raise_for_status()
+            wrote = 0
+            with open(out, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=1024 * 256):
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    wrote += len(chunk)
+                    done_bytes[0] += len(chunk)
+                    if byte_cb is not None:
+                        try:
+                            byte_cb(done_bytes[0], total_size[0])
+                        except Exception:
+                            pass
+            # partial (network cut)-er cheye choto — file bhalo na
+            if exp_size and wrote < exp_size * 0.95:
+                raise OSError(f"short read {wrote}/{exp_size}")
+            if wrote < 1024:
+                try:
+                    os.remove(out)
+                except OSError:
+                    pass
+        except Exception as e:
+            # 1 ta file fail hole puro job abort na — baki chole
+            _thread_log(f" Terabox file fail {name}: {str(e)[:100]}")
+            try:
+                if os.path.exists(out):
+                    os.remove(out)
+            except OSError:
+                pass
 
     files = [p for p in Path(target_dir).rglob("*") if p.is_file()]
     if not files:
@@ -932,7 +995,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.error import RetryAfter, TimedOut
+from telegram.error import NetworkError, RetryAfter, TimedOut
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -956,6 +1019,13 @@ API_BASE_FILE_URL = os.getenv("TELEGRAM_API_BASE_FILE_URL", "").strip()
 # Mega Pro login thakle quota bare (optional — khali thakle anonymous).
 MEGA_EMAIL = os.getenv("MEGA_EMAIL", "").strip()
 MEGA_PASSWORD = os.getenv("MEGA_PASSWORD", "").strip()
+
+# Ek sathe koto ta download job cholbe (beshi hole disk full + 429 risk)
+try:
+    MAX_CONCURRENT_JOBS = max(1, int(os.getenv("MAX_CONCURRENT_JOBS", "3").strip()))
+except ValueError:
+    MAX_CONCURRENT_JOBS = 3
+JOB_SEM = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
 
 URL_RE = re.compile(r'https?://[^\s]+')
 
@@ -985,10 +1055,11 @@ def is_allowed(user_id: int) -> bool:
 
 
 def make_zip_parts(src_dir: str, out_dir: str, base_name: str, max_bytes: int, progress_cb=None):
-    """src_dir-er files size onujayi multiple zip-e vag kore. Returns [zip_paths]."""
+    """src_dir-er files size onujayi multiple zip-e vag kore.
+    Returns ([zip_paths], skipped_big) — skipped = 2GB+ file count."""
     files = sorted([p for p in Path(src_dir).rglob("*") if p.is_file() and not p.name.endswith(".tmp")])
     if not files:
-        return []
+        return [], 0
 
     safe_base = re.sub(r'[\\/*?:"<>|]', "", base_name).strip()[:80] or "gallery"
     zips = []
@@ -996,21 +1067,34 @@ def make_zip_parts(src_dir: str, out_dir: str, base_name: str, max_bytes: int, p
     cur_zip_path = None
     cur_zip = None
     cur_size = 0
+    cur_files = 0  # khali zip upload hobe na
 
     def open_new_part():
-        nonlocal part, cur_zip_path, cur_zip, cur_size
+        nonlocal part, cur_zip_path, cur_zip, cur_size, cur_files
         if cur_zip:
             cur_zip.close()
+            if cur_files > 0:
+                zips.append(cur_zip_path)
+            elif cur_zip_path and os.path.exists(cur_zip_path):
+                # khali part file delete (sob file oversize hole)
+                try:
+                    os.remove(cur_zip_path)
+                except OSError:
+                    pass
         cur_zip_path = os.path.join(out_dir, f"{safe_base}_part{part}.zip")
         cur_zip = zipfile.ZipFile(cur_zip_path, "w", zipfile.ZIP_STORED)
         cur_size = 0
+        cur_files = 0
         part += 1
 
     open_new_part()
     total = len(files)
     skipped_big = 0
     for n, f in enumerate(files, start=1):
-        fsize = f.stat().st_size
+        try:
+            fsize = f.stat().st_size
+        except OSError:
+            continue  # file ber hoye gele (crash race) — bad
         if fsize > max_bytes:
             # single file-i limit-er besi — Telegram-e jabe na, skip
             print(f" Skip oversize ({fsize//1048576}MB): {f.name}", flush=True)
@@ -1023,28 +1107,34 @@ def make_zip_parts(src_dir: str, out_dir: str, base_name: str, max_bytes: int, p
             continue
         # ager part full hole notun part khulo
         if cur_size > 0 and cur_size + fsize > max_bytes:
-            zips.append(cur_zip_path)
             open_new_part()
         arc = os.path.relpath(f, src_dir)
         cur_zip.write(f, arc)
         cur_size += fsize
+        cur_files += 1
         if progress_cb is not None:
             try:
                 progress_cb(n, total)
             except Exception:
                 pass
 
-    if cur_zip:
-        cur_zip.close()
+    cur_zip.close()
+    if cur_files > 0:
         zips.append(cur_zip_path)
+    else:
+        try:
+            os.remove(cur_zip_path)
+        except OSError:
+            pass
 
-    return zips
+    return zips, skipped_big
 
 
 async def send_one_file(chat, path, caption: str):
     """Ekta file flood-safe way-te pathay. RetryAfter/TimedOut hole wait kore retry.
     Returns: 'doc' / 'photo' / 'other' / 'failed' — Telegram ki hisebe nilo."""
     kind = 'failed'
+    flood_waited = 0
     for attempt in range(4):
         try:
             with open(path, "rb") as fh:
@@ -1065,11 +1155,21 @@ async def send_one_file(chat, path, caption: str):
                 kind = 'other'
             break
         except RetryAfter as e:
+            # puro floodwait window-er beshi wait hole job hang kore sarat — cap
+            flood_waited += e.retry_after + 1
+            if flood_waited > 1200:
+                _thread_log(f" Send floodwait beshi (>20min), bad: {os.path.basename(path)}")
+                break
             await asyncio.sleep(e.retry_after + 1)
         except TimedOut:
             if attempt == 3:
                 raise
             await asyncio.sleep(3)
+        except NetworkError:
+            # Transient connection error — same way retry
+            if attempt == 3:
+                raise
+            await asyncio.sleep(2)
     # porpor 100+ file gele Telegram flood dey, tai choto gap
     await asyncio.sleep(0.7)
     return kind
@@ -1156,7 +1256,7 @@ async def status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"Status: online\n"
         f"Uptime: {h}h {mnt}m {sec}s\n"
-        f"Active jobs: {ACTIVE_JOBS}\n"
+        f"Active jobs: {ACTIVE_JOBS}/{MAX_CONCURRENT_JOBS}\n"
         f"Disk free: {disk}"
     )
 
@@ -1175,22 +1275,33 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def url_listener(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update.effective_user.id):
+    msg = update.message
+    if not msg:
         return
-    if not update.message or not update.message.text:
+    # media caption-e o URL thakte pare
+    text = msg.text or msg.caption or ""
+    if not URL_RE.search(text):
         return
-    if not URL_RE.search(update.message.text):
+    # channel post-e effective_user None hote pare — crash bad (public channel-e allow)
+    user = update.effective_user
+    if user is not None and not is_allowed(user.id):
         return
     global ACTIVE_JOBS
-    ACTIVE_JOBS += 1
-    try:
-        await route_url(update)
-    finally:
-        ACTIVE_JOBS -= 1
+    # concurrent job limit — beshi job sathe chalale disk full hote pare
+    async with JOB_SEM:
+        ACTIVE_JOBS += 1
+        try:
+            await route_url(update, text)
+        finally:
+            ACTIVE_JOBS -= 1
 
 
-async def route_url(update: Update):
-    urls = URL_RE.findall(update.message.text)
+async def route_url(update: Update, text: str = None):
+    if text is None:
+        text = update.message.text or update.message.caption or ""
+    urls = [u.rstrip('.,;:!?)\'"')
+            for u in URL_RE.findall(text)
+            if u.rstrip('.,;:!?)\'"')]
     if not urls:
         return
     urls = list(dict.fromkeys(urls))[:20]  # dedupe, max 20
@@ -1290,12 +1401,16 @@ async def zip_and_send(status, chat, target_dir: str, total: int):
     max_bytes = int(MAX_ZIP_MB * 1024 * 1024)
 
     await status.edit_text("Zipping...")
-    zips = await asyncio.to_thread(
+    zips, skipped = await asyncio.to_thread(
         make_zip_parts, target_dir, zipdir, base, max_bytes,
         make_progress_cb(status, loop, "Zipping..."),
     )
     if not zips:
-        await status.edit_text("Zip banano jayni.")
+        if skipped:
+            await status.edit_text(
+                f"Zip banano jayni — {skipped} file 2GB+ (Telegram limit).")
+        else:
+            await status.edit_text("Zip banano jayni.")
         return
 
     n_zips = len(zips)
@@ -1307,7 +1422,8 @@ async def zip_and_send(status, chat, target_dir: str, total: int):
 
     summary = f"doc:{kinds.count('doc')} photo:{kinds.count('photo')} other:{kinds.count('other')} failed:{kinds.count('failed')}"
     print(f"Send kinds: {summary}", flush=True)
-    await status.edit_text(f"Done! {n_files} files, {len(zips)} zip ({summary}).")
+    skip_note = f", {skipped} file 2GB+ skip" if skipped else ""
+    await status.edit_text(f"Done! {n_files} files, {len(zips)} zip ({summary}){skip_note}.")
 
 
 def mega_folder_api(node, payload):
@@ -1400,6 +1516,7 @@ def blocking_mega_folder_download(url, workdir, byte_cb=None):
             while os.path.exists(out):
                 out = os.path.join(target_dir, f"{stem}({k}){dot}{ext}" if dot else f"{safe}({k})")
                 k += 1
+        r = None  # finally-e unbound NameError hobe na
         try:
             try:
                 g = mega_folder_api(node, [{'a': 'g', 'g': 1, 'n': handle}])
@@ -1460,12 +1577,19 @@ def blocking_mega_folder_download(url, workdir, byte_cb=None):
                 return
         except ValueError:
             raise
-        except Exception:
+        except Exception as e:
+            _thread_log(f" Mega file fail {name}: {str(e)[:100]}")
             try:
                 if os.path.exists(out):
                     os.remove(out)
             except OSError:
                 pass
+        finally:
+            if r is not None:
+                try:
+                    r.close()
+                except Exception:
+                    pass
 
     with ThreadPoolExecutor(max_workers=4) as ex:
         list(ex.map(fetch_one, files))
@@ -1483,7 +1607,8 @@ def blocking_mega_download(url: str, workdir: str, byte_cb=None):
         return blocking_mega_folder_download(url, workdir, byte_cb)
     from mega import Mega
     mega = Mega()
-    m = mega.login(MEGA_EMAIL, MEGA_PASSWORD) if MEGA_EMAIL else mega.login()
+    # email + password duitai thakle pro login (quota bare)
+    m = mega.login(MEGA_EMAIL, MEGA_PASSWORD) if (MEGA_EMAIL and MEGA_PASSWORD) else mega.login()
     got = m.download_url(url, dest_path=workdir)
     path = got if isinstance(got, str) else None
     if not path or not os.path.isfile(path):
@@ -1630,8 +1755,9 @@ def blocking_ytdlp_download(url, workdir, byte_cb=None, height=1080):
         'outtmpl': os.path.join(workdir, '%(title).80s [%(id)s]-%(autonumber)02d.%(ext)s'),
         'progress_hooks': [hook],
     }
-    if os.path.exists('cookies.txt'):
-        opts['cookiefile'] = 'cookies.txt'
+    cookies_path = find_cookies_file()
+    if cookies_path:
+        opts['cookiefile'] = cookies_path
 
     with yt_dlp.YoutubeDL(opts) as ydl:
         hit = INFO_CACHE.get(url)
@@ -1707,8 +1833,9 @@ def fetch_video_info(url):
         'quiet': True, 'no_warnings': True, 'noplaylist': True,
         'retries': 3,
     }
-    if os.path.exists('cookies.txt'):
-        opts['cookiefile'] = 'cookies.txt'
+    cookies_path = find_cookies_file()
+    if cookies_path:
+        opts['cookiefile'] = cookies_path
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -1853,16 +1980,19 @@ async def on_quality_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     if height <= 0 or height > 1080:
         return  # forge kora callback ignore
-    item = PENDING_Q.pop(key, None)
+    # age auth check — unauthorized click hole onnotonter pending job nasta korbe na
+    item = PENDING_Q.get(key)
     if not item:
         await q.edit_message_text("Expired — link ta abar pathao.")
         return
     if time.time() - item.get("ts", 0) > 1800:
+        PENDING_Q.pop(key, None)
         await q.edit_message_text("Expired — link ta abar pathao.")
         return
     if q.from_user.id != item["user_id"] and not is_allowed(q.from_user.id):
-        await q.edit_message_text("Unauthorized.")
+        await q.edit_message_text("Ei download ta onno user-er — nijer link pathao.")
         return
+    PENDING_Q.pop(key, None)
     status = await q.edit_message_text("Starting download...")
     global ACTIVE_JOBS
     ACTIVE_JOBS += 1
@@ -2146,44 +2276,53 @@ def blocking_facebook_download(url, workdir, byte_cb=None):
     done_all, total_known = [0], [0]
 
     def fetch(u, prefix, i):
+        out = None
         try:
-            d = sess.get(u, headers=dl_headers, timeout=60, stream=True)
-            if d.status_code != 200:
-                return None
-            ctype = d.headers.get('Content-Type', '').lower().split(';')[0].strip()
-            if 'text/html' in ctype:
-                return None
-            ext = '.mp4' if prefix == 'video' else '.jpg'
-            if 'png' in ctype:
-                ext = '.png'
-            elif 'webp' in ctype:
-                ext = '.webp'
-            elif 'mp4' in ctype or 'video' in ctype:
-                ext = '.mp4'
-            out = os.path.join(target_dir, f"{i:03d}{ext}")
-            wrote = 0
-            with open(out, 'wb') as f:
-                for chunk in d.iter_content(chunk_size=1024 * 256):
-                    if not chunk:
-                        continue
-                    if wrote + len(chunk) > 1900 * 1024 * 1024:
-                        break
-                    f.write(chunk)
-                    wrote += len(chunk)
-                    done_all[0] += len(chunk)
-                    if byte_cb is not None:
-                        try:
-                            byte_cb(done_all[0], total_known[0])
-                        except Exception:
-                            pass
-            if wrote < 20000:
-                try:
-                    os.remove(out)
-                except OSError:
-                    pass
-                return None
-            return out
+            d = sess.get(u, headers=dl_headers, timeout=(30, 120), stream=True)
+            with d:
+                if d.status_code != 200:
+                    return None
+                ctype = d.headers.get('Content-Type', '').lower().split(';')[0].strip()
+                if 'text/html' in ctype:
+                    return None
+                ext = '.mp4' if prefix == 'video' else '.jpg'
+                if 'png' in ctype:
+                    ext = '.png'
+                elif 'webp' in ctype:
+                    ext = '.webp'
+                elif 'mp4' in ctype or 'video' in ctype:
+                    ext = '.mp4'
+                out = os.path.join(target_dir, f"{i:03d}{ext}")
+                wrote = 0
+                with open(out, 'wb') as f:
+                    for chunk in d.iter_content(chunk_size=1024 * 256):
+                        if not chunk:
+                            continue
+                        if wrote + len(chunk) > 1900 * 1024 * 1024:
+                            break
+                        f.write(chunk)
+                        wrote += len(chunk)
+                        done_all[0] += len(chunk)
+                        if byte_cb is not None:
+                            try:
+                                byte_cb(done_all[0], total_known[0])
+                            except Exception:
+                                pass
+                if wrote < 20000:
+                    try:
+                        os.remove(out)
+                        out = None
+                    except OSError:
+                        pass
+                    return None
+                return out
         except Exception:
+            # partial file bad deo — corrupt file zip-e dhukbe na
+            try:
+                if out is not None and os.path.exists(out):
+                    os.remove(out)
+            except OSError:
+                pass
             return None
 
     # video post (photo set nai) hole video. multi-photo post-e onno video dhukbe na.
@@ -2331,44 +2470,53 @@ def blocking_instagram_download(url, workdir, byte_cb=None):
     done_all, total_known = [0], [0]
 
     def fetch(u, i, ext_hint='.jpg'):
+        out = None
         try:
-            d = sess.get(u, headers=dl_headers, timeout=60, stream=True)
-            if d.status_code != 200:
-                return None
-            ctype = d.headers.get('Content-Type', '').lower().split(';')[0].strip()
-            if 'text/html' in ctype:
-                return None
-            ext = ext_hint
-            if 'png' in ctype:
-                ext = '.png'
-            elif 'webp' in ctype:
-                ext = '.webp'
-            elif 'mp4' in ctype or 'video' in ctype:
-                ext = '.mp4'
-            out = os.path.join(target_dir, f"{i:03d}{ext}")
-            wrote = 0
-            with open(out, 'wb') as f:
-                for chunk in d.iter_content(chunk_size=1024 * 256):
-                    if not chunk:
-                        continue
-                    if wrote + len(chunk) > 1900 * 1024 * 1024:
-                        break
-                    f.write(chunk)
-                    wrote += len(chunk)
-                    done_all[0] += len(chunk)
-                    if byte_cb is not None:
-                        try:
-                            byte_cb(done_all[0], total_known[0])
-                        except Exception:
-                            pass
-            if wrote < 10240:
-                try:
-                    os.remove(out)
-                except OSError:
-                    pass
-                return None
-            return out
+            d = sess.get(u, headers=dl_headers, timeout=(30, 120), stream=True)
+            with d:
+                if d.status_code != 200:
+                    return None
+                ctype = d.headers.get('Content-Type', '').lower().split(';')[0].strip()
+                if 'text/html' in ctype:
+                    return None
+                ext = ext_hint
+                if 'png' in ctype:
+                    ext = '.png'
+                elif 'webp' in ctype:
+                    ext = '.webp'
+                elif 'mp4' in ctype or 'video' in ctype:
+                    ext = '.mp4'
+                out = os.path.join(target_dir, f"{i:03d}{ext}")
+                wrote = 0
+                with open(out, 'wb') as f:
+                    for chunk in d.iter_content(chunk_size=1024 * 256):
+                        if not chunk:
+                            continue
+                        if wrote + len(chunk) > 1900 * 1024 * 1024:
+                            break
+                        f.write(chunk)
+                        wrote += len(chunk)
+                        done_all[0] += len(chunk)
+                        if byte_cb is not None:
+                            try:
+                                byte_cb(done_all[0], total_known[0])
+                            except Exception:
+                                pass
+                if wrote < 10240:
+                    try:
+                        os.remove(out)
+                        out = None
+                    except OSError:
+                        pass
+                    return None
+                return out
         except Exception:
+            # partial file bad deo — corrupt file zip-e dhukbe na
+            try:
+                if out is not None and os.path.exists(out):
+                    os.remove(out)
+            except OSError:
+                pass
             return None
 
     # 1. photo/carousel blocks (profile-pic bad dite cover dup URL-dedupe)
@@ -2434,6 +2582,7 @@ async def send_instagram(message, url: str):
                 await status.edit_text("Link bujha jayni. IG post/reel link dao.")
             elif code == "NO_PHOTO":
                 # reels/login-wall: yt-dlp fallback
+                await _safe_edit(status, "Photo nai — yt-dlp diye video try korchi...")
                 await send_video(message, url)
             else:
                 await status.edit_text("Instagram page khule nai. Link check koro.")
@@ -2496,10 +2645,13 @@ def blocking_direct_download(urls, workdir, byte_cb=None):
     saved = []
 
     def fetch_one(url):
+        r = None  # finally-e unbound NameError hobe na
         try:
-            r = sess.get(url, stream=True, timeout=30, allow_redirects=True)
+            r = sess.get(url, stream=True, timeout=(30, 120), allow_redirects=True)
             ctype = r.headers.get('Content-Type', '').lower().split(';')[0].strip()
-            if 'text/html' in ctype or 'text/plain' in ctype and 'attachment' not in r.headers.get('Content-Disposition', '').lower():
+            disp = r.headers.get('Content-Disposition', '').lower()
+            # html sob somoy bad; text/plain sudhu attachment header thakle nibe
+            if 'text/html' in ctype or ('text/plain' in ctype and 'attachment' not in disp):
                 return
             try:
                 length = int(r.headers.get('Content-Length') or 0)
@@ -2508,19 +2660,21 @@ def blocking_direct_download(urls, workdir, byte_cb=None):
             if length > 2000 * 1024 * 1024:
                 return  # 2GB+ single file skip (Telegram limit)
             name = direct_filename(url, r)
+            chunks = []
             if not name:
-                # first chunk dekhe html kina check
-                it = r.iter_content(chunk_size=8192)
-                try:
-                    first = next(it)
-                except StopIteration:
+                # prothom 256KB chunk dekhe html kina check (same iterator
+                # bar bar banale urllib3 stream-e undefined behaviour hote pare)
+                it = r.iter_content(chunk_size=1024 * 256)
+                chunks_iter = it
+                first = next(it, None)
+                if not first:
                     return
                 if first.lstrip()[:15].lower().startswith((b'<html', b'<!doctype')):
                     return
                 name = sanitize_file_name(f"file_{abs(hash(url)) % 100000}.bin")
                 chunks = [first]
             else:
-                chunks = []
+                chunks_iter = None
             out = os.path.join(target_dir, name)
             if os.path.exists(out):
                 stem, dot, ext = name.rpartition('.')
@@ -2536,7 +2690,8 @@ def blocking_direct_download(urls, workdir, byte_cb=None):
                 for c in chunks:
                     f.write(c)
                     wrote += len(c)
-                for chunk in r.iter_content(chunk_size=1024 * 256):
+                chunks_src = chunks_iter if chunks_iter is not None else r.iter_content(chunk_size=1024 * 256)
+                for chunk in chunks_src:
                     if not chunk:
                         continue
                     if wrote + len(chunk) > 2000 * 1024 * 1024:
@@ -2559,12 +2714,19 @@ def blocking_direct_download(urls, workdir, byte_cb=None):
                 return
             saved.append(out)
         except Exception:
+            # partial/failed file bad deo — zip-e corrupt file dhukbe na
+            try:
+                if 'out' in locals() and os.path.exists(out):
+                    os.remove(out)
+            except OSError:
+                pass
             return
         finally:
-            try:
-                r.close()
-            except Exception:
-                pass
+            if r is not None:
+                try:
+                    r.close()
+                except Exception:
+                    pass
 
     with ThreadPoolExecutor(max_workers=4) as ex:
         list(ex.map(fetch_one, urls))
@@ -2644,10 +2806,29 @@ def clean_stale_workdirs():
         pass
 
 
+def wait_for_local_api():
+    """Docker-er local Bot API server (botapi) ready hote 1-2 min lege.
+    Ready na hote run_polling get_me fail kore restart loop-e jay —
+    tai age server up hole dekhi (any HTTP reply mane ready)."""
+    if not API_BASE_URL:
+        return
+    print(f"Waiting for local Bot API ({API_BASE_URL})...", flush=True)
+    deadline = time.time() + 300  # max 5 min
+    while time.time() < deadline:
+        try:
+            requests.get(API_BASE_URL, timeout=5)
+            print(" Local Bot API ready.", flush=True)
+            return
+        except Exception:
+            time.sleep(2)
+    print(" Local Bot API ready na — tao cholar chesta kore jai...", flush=True)
+
+
 def main():
     if not BOT_TOKEN:
         raise SystemExit("BOT_TOKEN .env-e bosao. (.env.example dekho)")
     clean_stale_workdirs()
+    wait_for_local_api()
     builder = ApplicationBuilder().token(BOT_TOKEN)
     # 2GB porjonto file-e maximum timeout — slow VPS upload-eo "Timed out" hobe na.
     builder = builder.connect_timeout(120).read_timeout(3600).write_timeout(7200).pool_timeout(120)
@@ -2662,7 +2843,8 @@ def main():
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CallbackQueryHandler(on_quality_choice, pattern=r"^q:"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, url_listener))
+    app.add_handler(MessageHandler(
+        (filters.TEXT | filters.CAPTION) & ~filters.COMMAND, url_listener))
     print(f"Bot running... (MAX_ZIP_MB={MAX_ZIP_MB})")
     app.run_polling()
 

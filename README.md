@@ -88,6 +88,7 @@ Optional variables:
 ALLOWED_IDS=123456789        # only this Telegram user ID may use the bot (empty = everyone)
 MEGA_EMAIL=you@example.com   # higher Mega quota (optional)
 MEGA_PASSWORD=your-password  # higher Mega quota (optional)
+MAX_CONCURRENT_JOBS=3        # jobs downloading at the same time (default 3)
 ```
 
 > Get your numeric ID from [@userinfobot](https://t.me/userinfobot).
@@ -119,9 +120,11 @@ Just paste a link — no command needed.
   message arrive zipped (max 20 links).
 
 Limits: 2GB max per file/zip, 60-minute max video length, no live streams,
-no login-walled content unless you provide `cookies.txt` (export from your
-browser in Netscape format, place next to `docker-compose.yml` — it is
-git-ignored, never commit it).
+no login-walled content unless you provide cookies. To do that, export cookies
+from your browser as `cookies.txt` (Netscape format), put it in a `cookies/`
+folder next to `docker-compose.yml` (`cookies/cookies.txt` — it is mounted
+read-only into the bot and git-ignored, never commit it). Locally, a
+`cookies.txt` in the project root also works.
 
 ## Run locally
 
@@ -158,7 +161,7 @@ limit — do not raise it).
 | `BOT_TOKEN ...` on start | `BOT_TOKEN` env var is missing — add it and redeploy. |
 | `botapi` keeps restarting | Wrong `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` — recopy from my.telegram.org. |
 | `413 Request Entity Too Large` | Not using the local API server — check `botapi` is running. |
-| Download fails on login-walled posts | Add `cookies.txt` (browser export) and redeploy. |
+| Download fails on login-walled posts | Add `cookies/cookies.txt` next to `docker-compose.yml` (Netscape format) and redeploy. |
 | Mega says quota exceeded | Free IP quota is spent — wait, retry later, or set `MEGA_EMAIL` / `MEGA_PASSWORD`. |
 | Only you should use the bot | Set `ALLOWED_IDS` to your Telegram user ID. |
 

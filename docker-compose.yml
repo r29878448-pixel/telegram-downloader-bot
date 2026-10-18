@@ -38,6 +38,10 @@ services:
     # RAM-backed tmpfs-e 2GB+2GB dhorbe na (OOM hobe).
     volumes:
       - tmpdata:/tmp
+      # Login-walled site/media (IG, YT, FB...) — host-er ./cookies/cookies.txt
+      # (Netscape format) read-only mount hoy /app/cookies/cookies.txt-e.
+      # Folder khali/absent hole problem nai — bot nijei ignore kore.
+      - ./cookies:/app/cookies:ro
 
   # botapi-er cache (sent file copy) auto-clean — nahole VPS disk full hobe.
   # 6h+ purono file hourly delete kore. Cholti upload-e hat dey na.

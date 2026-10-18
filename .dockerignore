@@ -2,5 +2,11 @@ __pycache__/
 *.pyc
 .env
 .git/
+.gitignore
 tmp/
 downloads/
+cookies/
+cookies.txt
+README.md
+LICENSE
+docker-compose.yml
